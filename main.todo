@@ -19,15 +19,15 @@
 [x] Write the abstract provider helper (_base_provider.py).
 [x] Add a Financial Modeling Prep (FMP) provider stub.
 [x] Add a SEC EDGAR provider stub.
-[ ] Fetch daily price data for one ticker.
-[ ] Fetch balance sheet data for one ticker.
-[ ] Normalize all provider output to the same schema.
+[x] Fetch daily price data for one ticker.
+[x] Fetch balance sheet data for one ticker.
+[x] Normalize FMP provider output to the same schema.
 
 ## 4. Local storage
 [x] Design the DuckDB tables for prices, balance sheets, and compliance flags.
 [x] Write the DuckDB driver for read and write.
-[ ] Save fetched data as Parquet files.
-[ ] Load cached data before you call a remote API.
+[x] Save fetched data as Parquet files.
+[x] Load cached data before you call a remote API.
 [x] Add point-in-time (PIT) restatement logic so you do not look ahead.
 
 ## 5. Sector and business filters
@@ -36,7 +36,7 @@
 [x] Keep an audit log of why you exclude each ticker.
 
 ## 6. Shariah screening (AAOIFI)
-[ ] Compute the 24-month average market cap.
+[x] Compute the 24-month average market cap.
 [x] Compute the total debt ratio.
 [x] Compute the cash and interest-bearing securities ratio.
 [x] Compute the receivables and liquid assets ratio.

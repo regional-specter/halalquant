@@ -25,7 +25,9 @@ class DuckDBDriver:
     def write_prices(self, frame: pd.DataFrame) -> None:
         if frame.empty:
             return
-        self.con.register("_prices_tmp", frame)
+        prepared = frame.copy()
+        prepared["date"] = pd.to_datetime(prepared["date"]).dt.date
+        self.con.register("_prices_tmp", prepared)
         self.con.execute(
             """
             INSERT OR REPLACE INTO prices
@@ -62,7 +64,11 @@ class DuckDBDriver:
     def write_balance_sheets(self, frame: pd.DataFrame) -> None:
         if frame.empty:
             return
-        self.con.register("_bs_tmp", frame)
+        prepared = frame.copy()
+        for col in ("report_date", "filed_date"):
+            if col in prepared.columns:
+                prepared[col] = pd.to_datetime(prepared[col]).dt.date
+        self.con.register("_bs_tmp", prepared)
         self.con.execute(
             """
             INSERT OR REPLACE INTO balance_sheets
@@ -75,10 +81,29 @@ class DuckDBDriver:
         )
         self.con.unregister("_bs_tmp")
 
+    def read_balance_sheets(
+        self,
+        symbols: Optional[list[str]] = None,
+    ) -> pd.DataFrame:
+        clauses: list[str] = []
+        params: list[object] = []
+        if symbols:
+            placeholders = ", ".join(["?"] * len(symbols))
+            clauses.append(f"symbol IN ({placeholders})")
+            params.extend(symbols)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return self.con.execute(
+            f"SELECT * FROM balance_sheets {where} ORDER BY symbol, report_date",
+            params,
+        ).fetchdf()
+
     def write_compliance(self, frame: pd.DataFrame) -> None:
         if frame.empty:
             return
-        self.con.register("_flags_tmp", frame)
+        prepared = frame.copy()
+        if "as_of" in prepared.columns:
+            prepared["as_of"] = pd.to_datetime(prepared["as_of"]).dt.date
+        self.con.register("_flags_tmp", prepared)
         self.con.execute(
             """
             INSERT OR REPLACE INTO compliance_flags
@@ -89,6 +114,32 @@ class DuckDBDriver:
             """
         )
         self.con.unregister("_flags_tmp")
+
+    def read_compliance(
+        self,
+        symbols: Optional[list[str]] = None,
+        standard: Optional[str] = None,
+    ) -> pd.DataFrame:
+        clauses: list[str] = []
+        params: list[object] = []
+        if symbols:
+            placeholders = ", ".join(["?"] * len(symbols))
+            clauses.append(f"symbol IN ({placeholders})")
+            params.extend(symbols)
+        if standard:
+            clauses.append("standard = ?")
+            params.append(standard)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return self.con.execute(
+            f"SELECT * FROM compliance_flags {where} ORDER BY symbol, as_of",
+            params,
+        ).fetchdf()
+
+    def read_table(self, table: str) -> pd.DataFrame:
+        allowed = {"prices", "balance_sheets", "compliance_flags"}
+        if table not in allowed:
+            raise ValueError(f"Unknown table: {table}. Allowed: {sorted(allowed)}")
+        return self.con.execute(f"SELECT * FROM {table}").fetchdf()
 
     def close(self) -> None:
         self.con.close()

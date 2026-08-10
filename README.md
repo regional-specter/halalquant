@@ -118,6 +118,7 @@ halalquant/
 │   ├── purification/                # Dividend purification utilities
 │   │   └── _purifier.py             # Impure income ratio calculators
 │   ├── database/                    # Local caching & point-in-time storage
+│   │   ├── _cache.py                # Cache-before-fetch + Parquet mirrors
 │   │   ├── _duckdb_driver.py        # Vectorized local SQL query engine
 │   │   └── _models.py               # Database schemas (prices, balance sheets, flags)
 │   └── utils/                       # Shared helpers
@@ -178,7 +179,7 @@ class BaseScreener(ABC):
         ...
 ```
 
-Public usage mirrors a simple `yfinance`-style workflow:
+Public usage mirrors a simple `yfinance`-style workflow (set `FMP_API_KEY` first):
 
 ```python
 import halalquant as hq
@@ -303,7 +304,23 @@ amount = purifier.purification_amount(
 
 ## Step 5: Local Storage & Point-In-Time Data
 
-Fetched prices, balance sheets, and compliance flags land in DuckDB with a fixed schema (`halalquant/database/_models.py`). Point-in-time helpers ensure you never use a filing that was not yet public on the decision date.
+Fetched prices, balance sheets, and compliance flags land in DuckDB with a fixed schema (`halalquant/database/_models.py`). By default `download()` and `get_halal_universe()` use a **cache-before-fetch** layer:
+
+* DuckDB file: `~/.halalquant/cache.duckdb` (override with `HALALQUANT_CACHE` or `cache_path=`)
+* Optional Parquet mirrors under `~/.halalquant/parquet/`
+
+```python
+import halalquant as hq
+
+# First call hits FMP; second call for the same range is served from DuckDB
+prices = hq.download("AAPL", start="2024-01-01", end="2024-06-01")
+prices_again = hq.download("AAPL", start="2024-01-01", end="2024-06-01")
+
+# Bypass cache when you need a hard refresh
+fresh = hq.download("AAPL", start="2024-01-01", end="2024-06-01", force_refresh=True)
+```
+
+Point-in-time helpers ensure you never use a filing that was not yet public on the decision date.
 
 ```python
 # halalquant/utils/_pit_adjustments.py
@@ -322,7 +339,7 @@ This is the difference between a toy screener and a backtest-safe compliance eng
 
 ## Step 6: Verification & Testing
 
-We use `pytest` to lock the screening math, purification formulas, PIT guards, and public API stubs.
+We use `pytest` to lock the screening math, purification formulas, PIT guards, live FMP mocks, and cache behavior.
 
 Run the full test suite:
 
@@ -337,7 +354,7 @@ Current coverage includes:
 | `test_aaoifi_screening.py` | Debt / cash threshold pass-fail masks |
 | `test_purification.py` | Impure ratio and purification amount |
 | `test_pit_data.py` | No look-ahead on filings or prices |
-| `test_providers.py` | Symbol/date validation + provider / API stubs |
+| `test_providers.py` | Live FMP mocks, cache-before-fetch, Parquet round-trip |
 
 ### Example Test Case (`tests/test_aaoifi_screening.py`)
 
@@ -373,11 +390,12 @@ def test_evaluate_arrays_pass_and_fail():
 ### Providers
 
 - [x] AbstractFetcher base
-- [x] FMP provider stub
+- [x] FMP provider (live stable API)
 - [x] SEC EDGAR provider stub
-- [ ] Live FMP price + balance-sheet fetch
+- [x] Live FMP price + balance-sheet + income fetch
+- [x] Live FMP market-cap + 24-month trailing average
 - [ ] Live SEC XBRL mapping
-- [ ] Normalize all provider output to one schema end-to-end
+- [x] Normalize FMP provider output to one schema end-to-end
 
 ### Screening
 
@@ -385,7 +403,7 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] Sector audit log
 - [x] AAOIFI debt / cash / receivables ratios
 - [x] DJIM rule-set wrapper
-- [ ] Compute 24-month average market cap from price history
+- [x] Compute 24-month average market cap (FMP historical market cap)
 - [ ] Side-by-side AAOIFI vs DJIM comparison helpers
 
 ### Purification
@@ -400,36 +418,36 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] DuckDB read / write driver
 - [x] Point-in-time filing filter
 - [x] Point-in-time price cutoff
-- [ ] Parquet export / import
-- [ ] Cache-before-API load path
+- [x] Parquet export / import
+- [x] Cache-before-API load path (`LocalCache`, default `~/.halalquant/cache.duckdb`)
 
 ### Tests
 
 - [x] AAOIFI screening
 - [x] Purification math
 - [x] PIT look-ahead guards
-- [x] Provider / API stubs
+- [x] Provider / API + local cache tests
 - [ ] DJIM unit tests
-- [ ] Live provider mock tests (`responses`)
+- [x] Live provider mock tests (`responses`)
 
 ### Planned
 
-- [ ] Wire live FMP endpoints behind `FMP_API_KEY`
-- [ ] 24-month trailing market-cap calculator
-- [ ] Parquet-backed local cache
+- [x] Wire live FMP endpoints behind `FMP_API_KEY`
+- [x] 24-month trailing market-cap calculator
+- [x] Parquet-backed local cache
 - [ ] Financial-metric helpers over a date range
-- [ ] First tagged `0.1.0` release once live fetch works
+- [ ] Live SEC EDGAR companyfacts mapping
+- [ ] First tagged `0.1.0` release after a smoke test with a real API key
 
 ---
 
 ## What's Next
 
-The package scaffold and core math are in place. Remaining work:
+Live FMP fetch + local DuckDB/Parquet cache are in place. Remaining work:
 
-1. **Live providers** — implement real FMP historical prices and balance sheets; map SEC EDGAR XBRL tags into the shared schema
-2. **Market-cap trailing average** — compute $MC_{24m}$ from cached prices so screening is fully dynamic
-3. **Cache layer** — Parquet + DuckDB cache-before-fetch so research loops stay offline-friendly
-4. **More tests** — DJIM coverage and HTTP-mocked provider integration tests
+1. **SEC EDGAR** — map companyfacts XBRL tags into the shared balance-sheet schema
+2. **Metric helpers** — financial ratios over a date range for research notebooks
+3. **Smoke test + tag** — run `download` / `get_halal_universe` with a real `FMP_API_KEY`, then tag `0.1.0`
 
 Track the plain-English checklist in [`main.todo`](main.todo).
 
