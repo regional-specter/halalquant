@@ -1,0 +1,74 @@
+# Halal-Quant — Main Todo List
+# Write each task in simple plain English (ASD-STE 100 style).
+# Mark done with [x]. Keep one action per line.
+
+## 1. Project setup
+[x] Create the Python package layout.
+[x] Add the project config file (pyproject.toml).
+[x] Add a basic README that explains how to install and use the library.
+[x] Add a license file if one is missing.
+[x] Make sure you can install the package in editable mode.
+
+## 2. Core interfaces
+[x] Write the BaseDataProvider class.
+[x] Write the BaseScreener class.
+[x] Export the main public functions from __init__.py.
+[x] Define the standard column names for price and fundamental data.
+
+## 3. Data providers
+[x] Write the abstract provider helper (_base_provider.py).
+[x] Add a Financial Modeling Prep (FMP) provider stub.
+[x] Add a SEC EDGAR provider stub.
+[ ] Fetch daily price data for one ticker.
+[ ] Fetch balance sheet data for one ticker.
+[ ] Normalize all provider output to the same schema.
+
+## 4. Local storage
+[x] Design the DuckDB tables for prices, balance sheets, and compliance flags.
+[x] Write the DuckDB driver for read and write.
+[ ] Save fetched data as Parquet files.
+[ ] Load cached data before you call a remote API.
+[x] Add point-in-time (PIT) restatement logic so you do not look ahead.
+
+## 5. Sector and business filters
+[x] Build the sector exclusion list (haram activities).
+[x] Filter tickers by business activity.
+[x] Keep an audit log of why you exclude each ticker.
+
+## 6. Shariah screening (AAOIFI)
+[ ] Compute the 24-month average market cap.
+[x] Compute the total debt ratio.
+[x] Compute the cash and interest-bearing securities ratio.
+[x] Compute the receivables and liquid assets ratio.
+[x] Return a pass or fail flag for each ticker.
+[x] Add unit tests for the AAOIFI thresholds.
+
+## 7. Shariah screening (DJIM)
+[x] Implement the Dow Jones Islamic Market rule set.
+[ ] Compare AAOIFI and DJIM results side by side.
+[ ] Add unit tests for the DJIM rules.
+
+## 8. Purification
+[x] Compute the impure income ratio for each ticker.
+[x] Compute the purification amount for dividends.
+[x] Document the purification formula in code comments.
+[x] Add unit tests for purification math.
+
+## 9. Unified strategy API
+[x] Add get_halal_universe() to return compliant tickers.
+[x] Add a yfinance-like download() for price history.
+[ ] Add helpers for financial metrics on a date range.
+[x] Return pandas or polars DataFrames with stable column names.
+[x] Document each public function with a short docstring.
+
+## 10. Validation and quality
+[x] Validate ticker symbols before a fetch.
+[x] Validate date ranges before a query.
+[x] Add tests that prove there is no look-ahead bias.
+[x] Add mock tests for remote providers.
+[x] Run the full test suite and fix failures.
+
+## 11. First usable release
+[x] Write a short usage example in the README.
+[ ] Tag a 0.1.0 release when the basic API works.
+[x] List known limits in the README.

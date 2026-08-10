@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "halalquant"
+version = "0.1.0"
+description = "Shariah-compliant quant data engine with screening, purification, and a yfinance-like API."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "Halal-Quant" }]
+keywords = ["shariah", "halal", "quant", "finance", "screening", "aaoifi"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "duckdb>=0.10",
+    "pyarrow>=14.0",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "responses>=0.25",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-username/halalquant"
+Repository = "https://github.com/your-username/halalquant"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["halalquant*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
