@@ -9,9 +9,9 @@
 </div>
 
 
-I implemented an end-to-end data abstraction layer and local cache for **Shariah-compliant quantitative strategies**. You can use this library to fetch market data, compute point-in-time financial metrics, enforce strict Shariah compliance screening, calculate purification ratios, and serve clean data to backtesting and execution engines via a unified Python API.
+I implemented an end-to-end data abstraction layer for **Shariah-compliant quantitative strategies**. You can use this library to fetch market data, compute point-in-time financial metrics, enforce strict Shariah compliance screening, calculate purification ratios, and serve clean data to backtesting and execution engines via a unified Python API.
 
-This project goes beyond simple API calls to build a full, installable Python package—from vectorized balance sheet ratios and point-in-time database management to automated compliance audit trails.
+This project goes beyond simple API calls to build a full, installable Python package—from vectorized balance sheet ratios to automated compliance audit trails.
 
 ---
 
@@ -21,9 +21,6 @@ Here is the data pipeline architecture, end to end:
 
 ```text
 [ Raw Vendor Data / SEC EDGAR ]
-        │
-        ▼
-[ Local Storage Layer (DuckDB / Parquet) ]
         │
         ▼
 [ Shariah Screening Engine ]
@@ -47,7 +44,7 @@ Here is the data pipeline architecture, end to end:
 * [Step 2: Financial Ratio Screening (The Math)](#step-2-financial-ratio-screening-the-math)
 * [Step 3: Sector Filters & Alternate Standards](#step-3-sector-filters--alternate-standards)
 * [Step 4: Purification Engine](#step-4-purification-engine)
-* [Step 5: Local Storage & Point-In-Time Data](#step-5-local-storage--point-in-time-data)
+* [Step 5: Point-In-Time Data](#step-5-point-in-time-data)
 * [Step 6: Verification & Testing](#step-6-verification--testing)
 * [Progress](#progress)
 * [What's Next](#whats-next)
@@ -123,7 +120,7 @@ halalquant/
 │   │   └── _sector_filter.py        # Sector / business activity exclusion matrix
 │   ├── purification/                # Dividend purification utilities
 │   │   └── _purifier.py             # Impure income ratio calculators
-│   ├── database/                    # Local caching & point-in-time storage
+│   ├── database/                    # Optional storage helpers (not used by download())
 │   │   ├── _cache.py                # Cache-before-fetch + Parquet mirrors
 │   │   ├── _duckdb_driver.py        # Vectorized local SQL query engine
 │   │   └── _models.py               # Database schemas (prices, balance sheets, flags)
@@ -310,23 +307,9 @@ amount = purifier.purification_amount(
 
 ---
 
-## Step 5: Local Storage & Point-In-Time Data
+## Step 5: Point-In-Time Data
 
-Fetched prices, balance sheets, and compliance flags land in DuckDB with a fixed schema (`halalquant/database/_models.py`). By default `download()` and `get_halal_universe()` use a **cache-before-fetch** layer:
-
-* DuckDB file: `~/.halalquant/cache.duckdb` (override with `HALALQUANT_CACHE` or `cache_path=`)
-* Optional Parquet mirrors under `~/.halalquant/parquet/`
-
-```python
-import halalquant as hq
-
-# First call hits FMP; second call for the same range is served from DuckDB
-prices = hq.download("AAPL", start="2024-01-01", end="2024-06-01")
-prices_again = hq.download("AAPL", start="2024-01-01", end="2024-06-01")
-
-# Bypass cache when you need a hard refresh
-fresh = hq.download("AAPL", start="2024-01-01", end="2024-06-01", force_refresh=True)
-```
+`download()` and `get_halal_universe()` fetch from the vendor and return pandas DataFrames. Nothing is written to a local database.
 
 Point-in-time helpers ensure you never use a filing that was not yet public on the decision date.
 
@@ -347,7 +330,7 @@ This is the difference between a toy screener and a backtest-safe compliance eng
 
 ## Step 6: Verification & Testing
 
-We use `pytest` to lock the screening math, purification formulas, PIT guards, live FMP mocks, and cache behavior.
+We use `pytest` to lock the screening math, purification formulas, PIT guards, and live FMP mocks.
 
 Run the full test suite:
 
@@ -362,7 +345,7 @@ Current coverage includes:
 | `test_aaoifi_screening.py` | Debt / cash threshold pass-fail masks |
 | `test_purification.py` | Impure ratio and purification amount |
 | `test_pit_data.py` | No look-ahead on filings or prices |
-| `test_providers.py` | Live FMP mocks, cache-before-fetch, Parquet round-trip |
+| `test_providers.py` | Live FMP mocks and yfinance-style `download()` / `get_halal_universe()` |
 
 ### Example Test Case (`tests/test_aaoifi_screening.py`)
 
@@ -422,27 +405,23 @@ def test_evaluate_arrays_pass_and_fail():
 
 ### Storage & PIT
 
-- [x] DuckDB schemas (prices, balance sheets, compliance flags)
-- [x] DuckDB read / write driver
 - [x] Point-in-time filing filter
 - [x] Point-in-time price cutoff
-- [x] Parquet export / import
-- [x] Cache-before-API load path (`LocalCache`, default `~/.halalquant/cache.duckdb`)
+- [ ] Optional local cache (not used by the public API)
 
 ### Tests
 
 - [x] AAOIFI screening
 - [x] Purification math
 - [x] PIT look-ahead guards
-- [x] Provider / API + local cache tests
+- [x] Provider / API fetch tests
 - [ ] DJIM unit tests
 - [x] Live provider mock tests (`responses`)
 
 ### Planned
 
-- [x] Wire live FMP endpoints behind `FMP_API_KEY`
+- [x] Wire live FMP endpoints
 - [x] 24-month trailing market-cap calculator
-- [x] Parquet-backed local cache
 - [ ] Financial-metric helpers over a date range
 - [ ] Live SEC EDGAR companyfacts mapping
 - [ ] First tagged `0.1.0` release after a smoke test with a real API key
@@ -451,7 +430,7 @@ def test_evaluate_arrays_pass_and_fail():
 
 ## What's Next
 
-Live FMP fetch + local DuckDB/Parquet cache are in place. Remaining work:
+Live FMP fetch is in place (`download()` / `get_halal_universe()` return DataFrames, nothing is cached). Remaining work:
 
 1. **SEC EDGAR** — map companyfacts XBRL tags into the shared balance-sheet schema
 2. **Metric helpers** — financial ratios over a date range for research notebooks

@@ -26,8 +26,7 @@
 ## 4. Local storage
 [x] Design the DuckDB tables for prices, balance sheets, and compliance flags.
 [x] Write the DuckDB driver for read and write.
-[x] Save fetched data as Parquet files.
-[x] Load cached data before you call a remote API.
+[x] Public API stays fetch-only (no local DB), like yfinance.
 [x] Add point-in-time (PIT) restatement logic so you do not look ahead.
 
 ## 5. Sector and business filters

@@ -132,7 +132,7 @@ def test_fmp_get_balance_sheet_maps_fields():
 
 
 @responses.activate
-def test_download_uses_cache(tmp_path: Path):
+def test_download_fetches_prices():
     responses.add(
         responses.GET,
         re.compile(rf"{BASE}/historical-price-eod/full"),
@@ -151,33 +151,27 @@ def test_download_uses_cache(tmp_path: Path):
         status=200,
     )
     provider = FMPProvider(api_key="test-key")
-    cache_path = tmp_path / "cache.duckdb"
     prices = download(
         "AAPL",
         start="2024-01-01",
         end="2024-01-31",
         provider=provider,
-        cache_path=cache_path,
-        use_cache=True,
     )
     assert len(prices) == 1
     assert len(responses.calls) == 1
 
-    # Second call should hit cache only
     prices2 = download(
         "AAPL",
         start="2024-01-01",
         end="2024-01-31",
         provider=provider,
-        cache_path=cache_path,
-        use_cache=True,
     )
     assert len(prices2) == 1
-    assert len(responses.calls) == 1
+    assert len(responses.calls) == 2
 
 
 @responses.activate
-def test_get_halal_universe_live_path(tmp_path: Path):
+def test_get_halal_universe_live_path():
     responses.add(
         responses.GET,
         re.compile(rf"{BASE}/profile"),
@@ -212,8 +206,6 @@ def test_get_halal_universe_live_path(tmp_path: Path):
         "AAPL",
         provider=provider,
         apply_sector_filter=True,
-        cache_path=tmp_path / "u.duckdb",
-        use_cache=True,
     )
     assert not universe.empty
     assert "is_compliant" in universe.columns
