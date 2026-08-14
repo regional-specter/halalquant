@@ -464,15 +464,18 @@ def test_evaluate_arrays_pass_and_fail():
 
 ### Planned
 
-- [ ] First tagged `0.1.0` release
+- [x] First tagged `v0.1.0` release
 
 ---
 
 ## What's Next
 
-The public API no longer depends on a paid data vendor. Remaining work:
+`v0.1.0` is tagged. Follow-on work:
 
-1. **Tag `0.1.0`** — live Yahoo + SEC smoke already passed (`HALALQUANT_LIVE=1 pytest tests/test_live_smoke.py`)
+1. **Non-US issuers** — SEC EDGAR only covers US filers
+2. **Optional cache** — DuckDB/Parquet helpers exist but `download()` does not use them
+3. **Bank XBRL mapping** — without the sector filter, banks can look compliant because cash/receivables tags do not map
+4. **Purification PIT** — some dividends still attach an older income row when later filings restate prior periods
 
 Track the plain-English checklist in [`main.todo`](main.todo).
 

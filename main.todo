@@ -71,5 +71,11 @@
 
 ## 11. First usable release
 [x] Write a short usage example in the README.
-[ ] Tag a 0.1.0 release when the basic API works.
+[x] Tag a 0.1.0 release when the basic API works.
 [x] List known limits in the README.
+
+## 12. After 0.1.0
+[ ] Add non-US filing sources (SEC covers US issuers only).
+[ ] Wire the optional local cache into the public API if users want offline reruns.
+[ ] Map bank and insurer XBRL tags so financial ratios are not empty without a sector filter.
+[ ] Tighten purification so dividends use the latest income statement known on the ex-date.
