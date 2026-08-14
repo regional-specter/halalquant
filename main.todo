@@ -17,11 +17,11 @@
 
 ## 3. Data providers
 [x] Write the abstract provider helper (_base_provider.py).
-[x] Add a Financial Modeling Prep (FMP) provider stub.
-[x] Add a SEC EDGAR provider stub.
+[x] Fetch prices and dividends with yfinance.
+[x] Fetch US balance sheets and income from SEC EDGAR.
 [x] Fetch daily price data for one ticker.
 [x] Fetch balance sheet data for one ticker.
-[x] Normalize FMP provider output to the same schema.
+[x] Normalize provider output to the same schema.
 
 ## 4. Local storage
 [x] Design the DuckDB tables for prices, balance sheets, and compliance flags.
@@ -56,6 +56,7 @@
 ## 9. Unified strategy API
 [x] Add get_halal_universe() to return compliant tickers.
 [x] Add a yfinance-like download() for price history.
+[x] Add purify_dividends() to the public API.
 [ ] Add helpers for financial metrics on a date range.
 [x] Return pandas or polars DataFrames with stable column names.
 [x] Document each public function with a short docstring.

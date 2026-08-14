@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "halalquant"
 version = "0.1.0"
-description = "Shariah-compliant quant data engine with screening, purification, and a yfinance-like API."
+description = "Shariah-compliant quant library: yfinance market data, SEC filings, AAOIFI/DJIM screening, and dividend purification."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",
+    "yfinance>=0.2.40",
     "duckdb>=0.10",
     "pyarrow>=14.0",
     "requests>=2.31",

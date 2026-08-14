@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Optional, Sequence, Union
 
 import pandas as pd
+import requests
 
 from halalquant.base import BALANCE_SHEET_COLUMNS, PRICE_COLUMNS, DateLike
 from halalquant.config import resolve_api_key
@@ -20,6 +21,15 @@ INCOME_COLUMNS = (
     "total_revenue",
     "interest_income",
     "non_compliant_income",
+)
+
+DIVIDEND_COLUMNS = (
+    "symbol",
+    "ex_date",
+    "dividend",
+    "adj_dividend",
+    "record_date",
+    "payment_date",
 )
 
 
@@ -53,7 +63,19 @@ class FMPProvider(AbstractFetcher):
 
     def _get(self, path: str, **params: Any) -> Any:
         url = f"{self.BASE_URL}/{path.lstrip('/')}"
-        return self._get_json(url, params=self._params(**params))
+        try:
+            payload = self._get_json(url, params=self._params(**params))
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            raise ValueError(
+                f"FMP request failed ({status}) for '{path}'. "
+                "That endpoint may not be included on your FMP plan."
+            ) from None
+        if isinstance(payload, dict):
+            message = payload.get("Error Message") or payload.get("Error") or payload.get("error")
+            if message:
+                raise ValueError(f"FMP error: {message}")
+        return payload
 
     @staticmethod
     def _as_records(payload: Any) -> list[dict[str, Any]]:
@@ -206,6 +228,44 @@ class FMPProvider(AbstractFetcher):
             out[col] = pd.to_datetime(out[col], errors="coerce").dt.date
         return out[list(INCOME_COLUMNS)].sort_values(
             ["symbol", "report_date"]
+        ).reset_index(drop=True)
+
+    def get_dividends(
+        self,
+        symbols: Sequence[str],
+        start: Optional[DateLike] = None,
+        end: Optional[DateLike] = None,
+    ) -> pd.DataFrame:
+        start_s = self._to_date_str(start) if start is not None else None
+        end_s = self._to_date_str(end) if end is not None else None
+        frames: list[pd.DataFrame] = []
+
+        for symbol in symbols:
+            rows = self._as_records(self._get("dividends", symbol=symbol))
+            if not rows:
+                continue
+            mapped = [self._map_dividend_row(symbol, row) for row in rows]
+            frame = pd.DataFrame(mapped)
+            if frame.empty:
+                continue
+            ex_dates = pd.to_datetime(frame["ex_date"], errors="coerce")
+            if start_s is not None:
+                frame = frame[ex_dates >= pd.Timestamp(start_s)]
+                ex_dates = pd.to_datetime(frame["ex_date"], errors="coerce")
+            if end_s is not None:
+                frame = frame[ex_dates <= pd.Timestamp(end_s)]
+            if not frame.empty:
+                frames.append(frame)
+
+        if not frames:
+            return pd.DataFrame(columns=list(DIVIDEND_COLUMNS))
+
+        out = pd.concat(frames, ignore_index=True)
+        out["ex_date"] = pd.to_datetime(out["ex_date"], errors="coerce").dt.date
+        for col in ("record_date", "payment_date"):
+            out[col] = pd.to_datetime(out[col], errors="coerce").dt.date
+        return out[list(DIVIDEND_COLUMNS)].sort_values(
+            ["symbol", "ex_date"]
         ).reset_index(drop=True)
 
     def get_profile(self, symbols: Sequence[str]) -> pd.DataFrame:
@@ -393,6 +453,19 @@ class FMPProvider(AbstractFetcher):
             "total_revenue": revenue,
             "interest_income": interest_income,
             "non_compliant_income": non_compliant,
+        }
+
+    @staticmethod
+    def _map_dividend_row(symbol: str, row: dict[str, Any]) -> dict[str, Any]:
+        amount = _num(row.get("dividend") or row.get("adjDividend") or row.get("adj_dividend"))
+        adj = _num(row.get("adjDividend") or row.get("adj_dividend") or row.get("dividend"))
+        return {
+            "symbol": symbol,
+            "ex_date": row.get("date") or row.get("exDate") or row.get("ex_date"),
+            "dividend": amount,
+            "adj_dividend": adj,
+            "record_date": row.get("recordDate") or row.get("record_date"),
+            "payment_date": row.get("paymentDate") or row.get("payment_date"),
         }
 
 

@@ -103,3 +103,21 @@ COMPLIANCE_COLUMNS: tuple[str, ...] = (
     "standard",
     "reason",
 )
+
+INCOME_COLUMNS: tuple[str, ...] = (
+    "symbol",
+    "report_date",
+    "filed_date",
+    "total_revenue",
+    "interest_income",
+    "non_compliant_income",
+)
+
+DIVIDEND_COLUMNS: tuple[str, ...] = (
+    "symbol",
+    "ex_date",
+    "dividend",
+    "adj_dividend",
+    "record_date",
+    "payment_date",
+)

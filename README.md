@@ -9,27 +9,27 @@
 </div>
 
 
-I implemented an end-to-end data abstraction layer for **Shariah-compliant quantitative strategies**. You can use this library to fetch market data, compute point-in-time financial metrics, enforce strict Shariah compliance screening, calculate purification ratios, and serve clean data to backtesting and execution engines via a unified Python API.
+`halalquant` is a Python library for **Shariah-compliant quantitative strategies**. It sits on top of public market data (yfinance) and US filings (SEC EDGAR), then applies AAOIFI / DJIM screening, sector exclusions, and dividend purification. You get strategy-ready pandas DataFrames through a yfinance-shaped API — no paid vendor key required.
 
-This project goes beyond simple API calls to build a full, installable Python package—from vectorized balance sheet ratios to automated compliance audit trails.
+The library is the **ingestion + compliance layer**: fetch prices, screen a universe, purify dividends, then feed clean frames into your own backtest or execution stack.
 
 ---
 
-## From Raw Data Vendors to Strategy-Ready Signals
-
-Here is the data pipeline architecture, end to end:
+## From Market Data to Strategy-Ready Signals
 
 ```text
-[ Raw Vendor Data / SEC EDGAR ]
+[ yfinance ]  prices, dividends, sector
+[ SEC EDGAR ]  US balance sheets & income (point-in-time filings)
         │
         ▼
-[ Shariah Screening Engine ]
+[ Shariah Screening Engine ]  AAOIFI / DJIM + sector filters
         │
         ▼
-[ Purification Engine ]
+[ Purification Engine ]  impure income × dividend
         │
         ▼
-[ Unified Strategy API ]  ≈  yfinance-style download() + get_halal_universe()
+[ Unified Strategy API ]
+  hq.download()  ·  hq.get_halal_universe()  ·  hq.purify_dividends()
 ```
 
 ---
@@ -88,16 +88,14 @@ To run the automated test suite, install the dev extras:
 pip install -e ".[dev]"
 ```
 
-Set a vendor API key in your script (recommended). The env var still works as a fallback:
+No API key is required. Prices and dividends come from yfinance; US fundamentals come from the public SEC EDGAR companyfacts API.
 
 ```python
 import halalquant as hq
 
-hq.api_key = "your_key_here"
-```
-
-```bash
-export FMP_API_KEY="your_key_here"
+prices = hq.download("AAPL", start="2024-01-01", end="2024-06-01")
+universe = hq.get_halal_universe(["AAPL", "MSFT"], standard="aaoifi")
+purified = hq.purify_dividends("AAPL", start="2024-01-01", end="2024-12-31")
 ```
 
 ---
@@ -108,12 +106,13 @@ export FMP_API_KEY="your_key_here"
 halalquant/
 ├── halalquant/                       # Core library package
 │   ├── __init__.py                  # Exposes top-level data loaders
-│   ├── api.py                       # download() and get_halal_universe()
+│   ├── api.py                       # download(), get_halal_universe(), purify_dividends()
 │   ├── base.py                      # BaseDataProvider and BaseScreener interfaces
-│   ├── providers/                   # Vendor data adaptors (FMP, SEC)
-│   │   ├── _base_provider.py        # Abstract fetcher class
-│   │   ├── _fmp.py                  # Financial Modeling Prep wrapper
-│   │   └── _sec_edgar.py            # SEC EDGAR parser for raw XBRL files
+│   ├── providers/                   # Data adaptors
+│   │   ├── _base_provider.py        # HTTP helper used by SEC
+│   │   ├── _yfinance.py             # Prices, dividends, sector via yfinance
+│   │   ├── _sec_edgar.py            # US filings via SEC companyfacts
+│   │   └── _fmp.py                  # Optional FMP adaptor (not used by the public API)
 │   ├── screening/                   # Shariah filtering logic
 │   │   ├── _aaoifi.py               # AAOIFI compliance engine (debt & liquidity math)
 │   │   ├── _djim.py                 # Dow Jones Islamic Market compliance rules
@@ -131,7 +130,8 @@ halalquant/
 │   ├── test_aaoifi_screening.py     # Unit tests verifying financial ratio thresholds
 │   ├── test_purification.py         # Tests for dividend purification math
 │   ├── test_pit_data.py             # Look-ahead bias prevention tests
-│   └── test_providers.py            # API / provider stub tests
+│   ├── test_providers.py            # yfinance-shaped API + provider tests
+│   └── test_sec_edgar.py            # SEC companyfacts mapping tests
 ├── main.todo
 ├── pyproject.toml
 └── README.md
@@ -147,10 +147,10 @@ Every data provider in `halalquant` adheres to a strict Object-Oriented interfac
 Data Request (Symbol, Date Range)
         │
         ▼
-.get_halal_universe() / .download()
+.download() / .get_halal_universe() / .purify_dividends()
         │
         ▼
-Returns Compliant Tickers & Metrics  (or OHLCV frames)
+Returns OHLCV, compliance metrics, or purification amounts
 ```
 
 ```python
@@ -182,15 +182,14 @@ class BaseScreener(ABC):
         ...
 ```
 
-Public usage mirrors a simple `yfinance`-style workflow:
+Public usage:
 
 ```python
 import halalquant as hq
 
-hq.api_key = "your_key_here"
-
 prices = hq.download("AAPL", start="2024-01-01", end="2024-06-01")
 universe = hq.get_halal_universe(["AAPL", "MSFT"], standard="aaoifi")
+purified = hq.purify_dividends("AAPL", start="2024-01-01", end="2024-12-31")
 ```
 
 ---
@@ -254,11 +253,13 @@ class AAOIFIScreener(BaseScreener):
 
 `evaluate_compliance()` wraps the same math over a fundamentals DataFrame and returns audit-friendly columns: `is_compliant`, `debt_ratio`, `cash_ratio`, `receivables_ratio`, and `reason`.
 
+Trailing market cap is `shares outstanding ×` yfinance close prices (spot and 24-month average).
+
 ---
 
 ## Step 3: Sector Filters & Alternate Standards
 
-Before financial ratios run, business-activity screens exclude clearly non-compliant sectors (alcohol, gambling, conventional banking, weapons, etc.).
+Before financial ratios run, business-activity screens exclude clearly non-compliant sectors (alcohol, gambling, conventional banking, weapons, etc.). Yahoo sector/industry labels are mapped onto that vocabulary (for example, “Banks - Diversified” → `conventional banking`).
 
 ```python
 # halalquant/screening/_sector_filter.py
@@ -305,13 +306,24 @@ amount = purifier.purification_amount(
 # ratio == 0.05, amount == 0.10
 ```
 
+Or fetch live dividends (yfinance) and income (SEC) in one call:
+
+```python
+import halalquant as hq
+
+purified = hq.purify_dividends("AAPL", start="2024-01-01", end="2024-12-31")
+# columns include dividend, impure_ratio, purification_amount
+```
+
+Interest income is used as a conservative proxy for non-compliant income when a finer breakdown is not in the filing.
+
 ---
 
 ## Step 5: Point-In-Time Data
 
-`download()` and `get_halal_universe()` fetch from the vendor and return pandas DataFrames. Nothing is written to a local database.
+`download()`, `get_halal_universe()`, and `purify_dividends()` fetch on demand and return pandas DataFrames. Nothing is written to a local database.
 
-Point-in-time helpers ensure you never use a filing that was not yet public on the decision date.
+Point-in-time helpers ensure you never use a filing that was not yet public on the decision date. SEC `filed_date` is the as-of cutoff.
 
 ```python
 # halalquant/utils/_pit_adjustments.py
@@ -330,7 +342,7 @@ This is the difference between a toy screener and a backtest-safe compliance eng
 
 ## Step 6: Verification & Testing
 
-We use `pytest` to lock the screening math, purification formulas, PIT guards, and live FMP mocks.
+We use `pytest` to lock the screening math, purification formulas, PIT guards, yfinance adapters, and SEC tag mapping.
 
 Run the full test suite:
 
@@ -345,7 +357,8 @@ Current coverage includes:
 | `test_aaoifi_screening.py` | Debt / cash threshold pass-fail masks |
 | `test_purification.py` | Impure ratio and purification amount |
 | `test_pit_data.py` | No look-ahead on filings or prices |
-| `test_providers.py` | Live FMP mocks and yfinance-style `download()` / `get_halal_universe()` |
+| `test_providers.py` | yfinance-shaped `download()` / universe / purify path |
+| `test_sec_edgar.py` | SEC companyfacts → canonical schema |
 
 ### Example Test Case (`tests/test_aaoifi_screening.py`)
 
@@ -375,26 +388,23 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] BaseScreener
 - [x] Canonical price / balance-sheet / compliance schemas
 - [x] Symbol and date-range validation
-- [x] `download()` (yfinance-like surface)
+- [x] `download()` (yfinance-backed)
 - [x] `get_halal_universe()`
+- [x] `purify_dividends()`
 
 ### Providers
 
-- [x] AbstractFetcher base
-- [x] FMP provider (live stable API)
-- [x] SEC EDGAR provider stub
-- [x] Live FMP price + balance-sheet + income fetch
-- [x] Live FMP market-cap + 24-month trailing average
-- [ ] Live SEC XBRL mapping
-- [x] Normalize FMP provider output to one schema end-to-end
+- [x] yfinance prices, dividends, and sector map
+- [x] SEC EDGAR companyfacts for US balance sheets and income
+- [x] Trailing 24-month market cap from prices × shares outstanding
+- [ ] Non-US filing sources (SEC covers US issuers)
 
 ### Screening
 
 - [x] Sector / business-activity exclusion list
-- [x] Sector audit log
+- [x] Yahoo sector/industry → exclusion labels
 - [x] AAOIFI debt / cash / receivables ratios
 - [x] DJIM rule-set wrapper
-- [x] Compute 24-month average market cap (FMP historical market cap)
 - [ ] Side-by-side AAOIFI vs DJIM comparison helpers
 
 ### Purification
@@ -402,6 +412,7 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] Impure income ratio
 - [x] Dividend purification amount
 - [x] Frame-level `purify_frame()` helper
+- [x] Public `purify_dividends()` fetch path
 
 ### Storage & PIT
 
@@ -414,27 +425,24 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] AAOIFI screening
 - [x] Purification math
 - [x] PIT look-ahead guards
-- [x] Provider / API fetch tests
+- [x] yfinance adapter + public API tests
+- [x] SEC mapping tests
 - [ ] DJIM unit tests
-- [x] Live provider mock tests (`responses`)
 
 ### Planned
 
-- [x] Wire live FMP endpoints
-- [x] 24-month trailing market-cap calculator
 - [ ] Financial-metric helpers over a date range
-- [ ] Live SEC EDGAR companyfacts mapping
-- [ ] First tagged `0.1.0` release after a smoke test with a real API key
+- [ ] First tagged `0.1.0` release after a live yfinance + SEC smoke test
 
 ---
 
 ## What's Next
 
-Live FMP fetch is in place (`download()` / `get_halal_universe()` return DataFrames, nothing is cached). Remaining work:
+The public API no longer depends on a paid data vendor. Remaining work:
 
-1. **SEC EDGAR** — map companyfacts XBRL tags into the shared balance-sheet schema
+1. **DJIM tests** — lock the 33% thresholds and a side-by-side AAOIFI comparison
 2. **Metric helpers** — financial ratios over a date range for research notebooks
-3. **Smoke test + tag** — run `download` / `get_halal_universe` with a real `FMP_API_KEY`, then tag `0.1.0`
+3. **Live smoke + tag** — run `download` / `get_halal_universe` / `purify_dividends` against Yahoo + SEC, then tag `0.1.0`
 
 Track the plain-English checklist in [`main.todo`](main.todo).
 
