@@ -67,6 +67,7 @@
 [x] Add tests that prove there is no look-ahead bias.
 [x] Add mock tests for remote providers.
 [x] Run the full test suite and fix failures.
+[x] Run a live Yahoo + SEC smoke test of the public API.
 
 ## 11. First usable release
 [x] Write a short usage example in the README.

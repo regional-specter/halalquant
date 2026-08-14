@@ -90,6 +90,7 @@ class SECEdgarProvider(AbstractFetcher):
             }
         )
         self._tickers: Optional[dict[str, int]] = None
+        self._facts_cache: dict[str, Optional[dict[str, Any]]] = {}
 
     def get_prices(
         self,
@@ -163,15 +164,22 @@ class SECEdgarProvider(AbstractFetcher):
         return self._tickers
 
     def _companyfacts(self, symbol: str) -> Optional[dict[str, Any]]:
-        cik = self._ticker_map().get(symbol.upper())
+        key = symbol.upper()
+        if key in self._facts_cache:
+            return self._facts_cache[key]
+        cik = self._ticker_map().get(key)
         if cik is None:
+            self._facts_cache[key] = None
             return None
         url = COMPANYFACTS_URL.format(cik=f"{cik:010d}")
         try:
             payload = self._get_json(url)
         except requests.HTTPError:
+            self._facts_cache[key] = None
             return None
-        return payload if isinstance(payload, dict) else None
+        facts = payload if isinstance(payload, dict) else None
+        self._facts_cache[key] = facts
+        return facts
 
     def _facts_to_balance_sheet(
         self,

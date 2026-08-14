@@ -50,3 +50,6 @@ include = ["halalquant*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "network: hits live yfinance and SEC EDGAR (set HALALQUANT_LIVE=1)",
+]

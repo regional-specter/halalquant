@@ -184,6 +184,19 @@ def test_purify_dividends_matches_filed_income():
     assert float(frame.iloc[0]["purification_amount"]) == 0.0125
 
 
+def test_yfinance_dividends_from_ticker_frame():
+    class _FakeTicker:
+        dividends = pd.DataFrame(
+            {"Dividends": [0.25]},
+            index=pd.DatetimeIndex(["2024-05-10"], name="date"),
+        )
+
+    provider = YFinanceProvider(ticker_factory=lambda symbol: _FakeTicker())
+    frame = provider.get_dividends(["AAPL"], start="2024-01-01", end="2024-12-31")
+    assert len(frame) == 1
+    assert float(frame.iloc[0]["dividend"]) == 0.25
+
+
 def test_yfinance_dividends_from_ticker_series():
     class _FakeTicker:
         dividends = pd.Series(

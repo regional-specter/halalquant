@@ -138,7 +138,8 @@ halalquant/
 │   ├── test_purification.py         # Tests for dividend purification math
 │   ├── test_pit_data.py             # Look-ahead bias prevention tests
 │   ├── test_providers.py            # yfinance-shaped API + provider tests
-│   └── test_sec_edgar.py            # SEC companyfacts mapping tests
+│   ├── test_sec_edgar.py            # SEC companyfacts mapping tests
+│   └── test_live_smoke.py           # Opt-in live Yahoo + SEC smoke (HALALQUANT_LIVE=1)
 ├── main.todo
 ├── pyproject.toml
 └── README.md
@@ -370,6 +371,12 @@ Run the full test suite:
 pytest tests/
 ```
 
+Live Yahoo + SEC checks are skipped unless you opt in (they hit the network):
+
+```bash
+HALALQUANT_LIVE=1 pytest tests/test_live_smoke.py -s
+```
+
 Current coverage includes:
 
 | Test file | What it verifies |
@@ -381,6 +388,7 @@ Current coverage includes:
 | `test_pit_data.py` | No look-ahead on filings or prices |
 | `test_providers.py` | yfinance-shaped `download()` / universe / purify path |
 | `test_sec_edgar.py` | SEC companyfacts → canonical schema |
+| `test_live_smoke.py` | Live `download` / `compare_standards` / metrics / purification |
 
 ### Example Test Case (`tests/test_aaoifi_screening.py`)
 
@@ -452,10 +460,11 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] yfinance adapter + public API tests
 - [x] SEC mapping tests
 - [x] DJIM unit tests
+- [x] Live yfinance + SEC smoke test
 
 ### Planned
 
-- [ ] First tagged `0.1.0` release after a live yfinance + SEC smoke test
+- [ ] First tagged `0.1.0` release
 
 ---
 
@@ -463,7 +472,7 @@ def test_evaluate_arrays_pass_and_fail():
 
 The public API no longer depends on a paid data vendor. Remaining work:
 
-1. **Live smoke + tag** — run `download` / `get_halal_universe` / `purify_dividends` / `compare_standards` / `get_financial_metrics` against Yahoo + SEC, then tag `0.1.0`
+1. **Tag `0.1.0`** — live Yahoo + SEC smoke already passed (`HALALQUANT_LIVE=1 pytest tests/test_live_smoke.py`)
 
 Track the plain-English checklist in [`main.todo`](main.todo).
 

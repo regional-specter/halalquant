@@ -70,24 +70,16 @@ class YFinanceProvider(BaseDataProvider):
         end_ts = pd.Timestamp(_to_date_str(end)) if end is not None else None
         frames: list[pd.DataFrame] = []
         for symbol in symbols:
-            series = getattr(self._ticker_factory(symbol), "dividends", pd.Series(dtype=float))
-            if series is None or len(series) == 0:
-                continue
-            frame = series.rename("dividend").reset_index()
-            date_col = frame.columns[0]
-            frame = frame.rename(columns={date_col: "ex_date"})
-            frame["symbol"] = symbol
-            frame["ex_date"] = pd.to_datetime(frame["ex_date"], utc=True, errors="coerce").dt.tz_localize(None)
-            if start_ts is not None:
-                frame = frame[frame["ex_date"] >= start_ts]
-            if end_ts is not None:
-                frame = frame[frame["ex_date"] <= end_ts]
+            raw = getattr(self._ticker_factory(symbol), "dividends", pd.Series(dtype=float))
+            frame = _dividends_to_frame(raw, symbol)
             if frame.empty:
                 continue
-            frame["adj_dividend"] = frame["dividend"]
-            frame["record_date"] = pd.NaT
-            frame["payment_date"] = pd.NaT
-            frame["ex_date"] = frame["ex_date"].dt.date
+            if start_ts is not None:
+                frame = frame[pd.to_datetime(frame["ex_date"]) >= start_ts]
+            if end_ts is not None:
+                frame = frame[pd.to_datetime(frame["ex_date"]) <= end_ts]
+            if frame.empty:
+                continue
             frames.append(frame[list(DIVIDEND_COLUMNS)])
 
         if not frames:
@@ -125,6 +117,48 @@ class YFinanceProvider(BaseDataProvider):
     ) -> pd.DataFrame:
         _ = (symbols, as_of)
         return pd.DataFrame(columns=list(INCOME_COLUMNS))
+
+
+def _dividends_to_frame(raw: Any, symbol: str) -> pd.DataFrame:
+    """Normalize yfinance dividend Series or DataFrame to DIVIDEND_COLUMNS."""
+    if raw is None or len(raw) == 0:
+        return pd.DataFrame(columns=list(DIVIDEND_COLUMNS))
+
+    if isinstance(raw, pd.Series):
+        frame = raw.rename("dividend").reset_index()
+    elif isinstance(raw, pd.DataFrame):
+        frame = raw.copy()
+        if not any(str(col).lower() in {"date", "ex_date"} for col in frame.columns):
+            frame = frame.reset_index()
+        rename = {}
+        for col in frame.columns:
+            key = str(col).strip().lower().replace(" ", "_")
+            if key in {"date", "ex_date", "index"}:
+                rename[col] = "ex_date"
+            elif key in {"dividends", "dividend", "amount"}:
+                rename[col] = "dividend"
+        frame = frame.rename(columns=rename)
+        if "dividend" not in frame.columns:
+            numeric = [c for c in frame.columns if c != "ex_date" and pd.api.types.is_numeric_dtype(frame[c])]
+            if numeric:
+                frame = frame.rename(columns={numeric[0]: "dividend"})
+    else:
+        return pd.DataFrame(columns=list(DIVIDEND_COLUMNS))
+
+    if "ex_date" not in frame.columns:
+        frame = frame.rename(columns={frame.columns[0]: "ex_date"})
+    if "dividend" not in frame.columns:
+        return pd.DataFrame(columns=list(DIVIDEND_COLUMNS))
+
+    frame["symbol"] = symbol
+    frame["ex_date"] = pd.to_datetime(frame["ex_date"], utc=True, errors="coerce").dt.tz_localize(None)
+    frame = frame.dropna(subset=["ex_date"])
+    frame["dividend"] = pd.to_numeric(frame["dividend"], errors="coerce")
+    frame["adj_dividend"] = frame["dividend"]
+    frame["record_date"] = pd.NaT
+    frame["payment_date"] = pd.NaT
+    frame["ex_date"] = frame["ex_date"].dt.date
+    return frame[list(DIVIDEND_COLUMNS)]
 
 
 def _to_date_str(value: DateLikeInput) -> str:
