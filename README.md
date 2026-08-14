@@ -30,6 +30,7 @@ The library is the **ingestion + compliance layer**: fetch prices, screen a univ
         ▼
 [ Unified Strategy API ]
   hq.download()  ·  hq.get_halal_universe()  ·  hq.purify_dividends()
+  hq.compare_standards()  ·  hq.get_financial_metrics()
 ```
 
 ---
@@ -96,6 +97,8 @@ import halalquant as hq
 prices = hq.download("AAPL", start="2024-01-01", end="2024-06-01")
 universe = hq.get_halal_universe(["AAPL", "MSFT"], standard="aaoifi")
 purified = hq.purify_dividends("AAPL", start="2024-01-01", end="2024-12-31")
+comparison = hq.compare_standards(["AAPL", "MSFT"])
+metrics = hq.get_financial_metrics("AAPL", start="2020-01-01", end="2024-12-31")
 ```
 
 ---
@@ -106,7 +109,8 @@ purified = hq.purify_dividends("AAPL", start="2024-01-01", end="2024-12-31")
 halalquant/
 ├── halalquant/                       # Core library package
 │   ├── __init__.py                  # Exposes top-level data loaders
-│   ├── api.py                       # download(), get_halal_universe(), purify_dividends()
+│   ├── api.py                       # download(), get_halal_universe(), purify_dividends(),
+│   │                                # compare_standards(), get_financial_metrics()
 │   ├── base.py                      # BaseDataProvider and BaseScreener interfaces
 │   ├── providers/                   # Data adaptors
 │   │   ├── _base_provider.py        # HTTP helper used by SEC
@@ -116,6 +120,7 @@ halalquant/
 │   ├── screening/                   # Shariah filtering logic
 │   │   ├── _aaoifi.py               # AAOIFI compliance engine (debt & liquidity math)
 │   │   ├── _djim.py                 # Dow Jones Islamic Market compliance rules
+│   │   ├── _compare.py              # Side-by-side AAOIFI vs DJIM helper
 │   │   └── _sector_filter.py        # Sector / business activity exclusion matrix
 │   ├── purification/                # Dividend purification utilities
 │   │   └── _purifier.py             # Impure income ratio calculators
@@ -128,6 +133,8 @@ halalquant/
 │       └── validation.py            # Symbol and date range validators
 ├── tests/
 │   ├── test_aaoifi_screening.py     # Unit tests verifying financial ratio thresholds
+│   ├── test_djim_screening.py       # DJIM 33% thresholds + AAOIFI comparison
+│   ├── test_metrics.py              # Date-range financial metric helpers
 │   ├── test_purification.py         # Tests for dividend purification math
 │   ├── test_pit_data.py             # Look-ahead bias prevention tests
 │   ├── test_providers.py            # yfinance-shaped API + provider tests
@@ -148,6 +155,7 @@ Data Request (Symbol, Date Range)
         │
         ▼
 .download() / .get_halal_universe() / .purify_dividends()
+.compare_standards() / .get_financial_metrics()
         │
         ▼
 Returns OHLCV, compliance metrics, or purification amounts
@@ -190,6 +198,8 @@ import halalquant as hq
 prices = hq.download("AAPL", start="2024-01-01", end="2024-06-01")
 universe = hq.get_halal_universe(["AAPL", "MSFT"], standard="aaoifi")
 purified = hq.purify_dividends("AAPL", start="2024-01-01", end="2024-12-31")
+comparison = hq.compare_standards(["AAPL", "MSFT"])
+metrics = hq.get_financial_metrics("AAPL", start="2020-01-01", end="2024-12-31")
 ```
 
 ---
@@ -274,10 +284,20 @@ kept = sector_filter.filter_symbols(
 # sector_filter.audit_log records why JPM was removed
 ```
 
-**DJIM** (Dow Jones Islamic Market) uses a parallel rule set with typical ~33% thresholds. Switch standards from the strategy API:
+**DJIM** (Dow Jones Islamic Market) uses a parallel rule set with typical ~33% thresholds. Switch standards from the strategy API, or compare both at once:
 
 ```python
 universe = hq.get_halal_universe(["AAPL", "MSFT"], standard="djim")
+side_by_side = hq.compare_standards(["AAPL", "MSFT"])
+# columns: debt_ratio, aaoifi_compliant, djim_compliant, agreement, ...
+```
+
+For research notebooks, pull screening ratios over a date range (one row per annual filing, or calendar snapshots with `freq="ME"` / `"QE"`):
+
+```python
+metrics = hq.get_financial_metrics("AAPL", start="2020-01-01", end="2024-12-31")
+# debt_ratio, cash_ratio, receivables_ratio, impure_ratio, ...
+monthly = hq.get_financial_metrics("AAPL", start="2023-01-01", end="2023-12-31", freq="ME")
 ```
 
 ---
@@ -321,7 +341,7 @@ Interest income is used as a conservative proxy for non-compliant income when a 
 
 ## Step 5: Point-In-Time Data
 
-`download()`, `get_halal_universe()`, and `purify_dividends()` fetch on demand and return pandas DataFrames. Nothing is written to a local database.
+`download()`, `get_halal_universe()`, `compare_standards()`, `get_financial_metrics()`, and `purify_dividends()` fetch on demand and return pandas DataFrames. Nothing is written to a local database.
 
 Point-in-time helpers ensure you never use a filing that was not yet public on the decision date. SEC `filed_date` is the as-of cutoff.
 
@@ -355,6 +375,8 @@ Current coverage includes:
 | Test file | What it verifies |
 | --- | --- |
 | `test_aaoifi_screening.py` | Debt / cash threshold pass-fail masks |
+| `test_djim_screening.py` | DJIM 33% thresholds and AAOIFI vs DJIM disagreement |
+| `test_metrics.py` | Date-range ratios, monthly PIT snapshots, `compare_standards()` |
 | `test_purification.py` | Impure ratio and purification amount |
 | `test_pit_data.py` | No look-ahead on filings or prices |
 | `test_providers.py` | yfinance-shaped `download()` / universe / purify path |
@@ -391,6 +413,8 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] `download()` (yfinance-backed)
 - [x] `get_halal_universe()`
 - [x] `purify_dividends()`
+- [x] `compare_standards()`
+- [x] `get_financial_metrics()`
 
 ### Providers
 
@@ -405,7 +429,7 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] Yahoo sector/industry → exclusion labels
 - [x] AAOIFI debt / cash / receivables ratios
 - [x] DJIM rule-set wrapper
-- [ ] Side-by-side AAOIFI vs DJIM comparison helpers
+- [x] Side-by-side AAOIFI vs DJIM comparison helpers
 
 ### Purification
 
@@ -427,11 +451,10 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] PIT look-ahead guards
 - [x] yfinance adapter + public API tests
 - [x] SEC mapping tests
-- [ ] DJIM unit tests
+- [x] DJIM unit tests
 
 ### Planned
 
-- [ ] Financial-metric helpers over a date range
 - [ ] First tagged `0.1.0` release after a live yfinance + SEC smoke test
 
 ---
@@ -440,9 +463,7 @@ def test_evaluate_arrays_pass_and_fail():
 
 The public API no longer depends on a paid data vendor. Remaining work:
 
-1. **DJIM tests** — lock the 33% thresholds and a side-by-side AAOIFI comparison
-2. **Metric helpers** — financial ratios over a date range for research notebooks
-3. **Live smoke + tag** — run `download` / `get_halal_universe` / `purify_dividends` against Yahoo + SEC, then tag `0.1.0`
+1. **Live smoke + tag** — run `download` / `get_halal_universe` / `purify_dividends` / `compare_standards` / `get_financial_metrics` against Yahoo + SEC, then tag `0.1.0`
 
 Track the plain-English checklist in [`main.todo`](main.todo).
 

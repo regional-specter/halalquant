@@ -44,8 +44,8 @@
 
 ## 7. Shariah screening (DJIM)
 [x] Implement the Dow Jones Islamic Market rule set.
-[ ] Compare AAOIFI and DJIM results side by side.
-[ ] Add unit tests for the DJIM rules.
+[x] Compare AAOIFI and DJIM results side by side.
+[x] Add unit tests for the DJIM rules.
 
 ## 8. Purification
 [x] Compute the impure income ratio for each ticker.
@@ -57,7 +57,7 @@
 [x] Add get_halal_universe() to return compliant tickers.
 [x] Add a yfinance-like download() for price history.
 [x] Add purify_dividends() to the public API.
-[ ] Add helpers for financial metrics on a date range.
+[x] Add helpers for financial metrics on a date range.
 [x] Return pandas or polars DataFrames with stable column names.
 [x] Document each public function with a short docstring.
 

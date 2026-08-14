@@ -5,6 +5,18 @@ from __future__ import annotations
 import pandas as pd
 
 
+def known_filings(
+    frame: pd.DataFrame,
+    as_of: str | pd.Timestamp,
+    filed_col: str = "filed_date",
+) -> pd.DataFrame:
+    """Keep every filing that was already public on `as_of` (no collapse)."""
+    if frame.empty:
+        return frame.copy()
+    as_of_ts = pd.Timestamp(as_of)
+    return frame[pd.to_datetime(frame[filed_col]) <= as_of_ts].copy()
+
+
 def as_of_filter(
     frame: pd.DataFrame,
     as_of: str | pd.Timestamp,

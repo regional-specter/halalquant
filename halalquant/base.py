@@ -104,6 +104,26 @@ COMPLIANCE_COLUMNS: tuple[str, ...] = (
     "reason",
 )
 
+METRIC_COLUMNS: tuple[str, ...] = (
+    "symbol",
+    "as_of",
+    "report_date",
+    "filed_date",
+    "total_debt",
+    "cash_and_equiv",
+    "interest_bearing_securities",
+    "receivables",
+    "liquid_assets",
+    "market_cap",
+    "market_cap_24m",
+    "debt_ratio",
+    "cash_ratio",
+    "receivables_ratio",
+    "total_revenue",
+    "non_compliant_income",
+    "impure_ratio",
+)
+
 INCOME_COLUMNS: tuple[str, ...] = (
     "symbol",
     "report_date",
