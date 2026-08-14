@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from datetime import date, datetime, timedelta
 from typing import Any, Optional, Sequence, Union
 
 import pandas as pd
 
 from halalquant.base import BALANCE_SHEET_COLUMNS, PRICE_COLUMNS, DateLike
+from halalquant.config import resolve_api_key
 from halalquant.providers._base_provider import AbstractFetcher
 
 DateLikeInput = Union[str, date, datetime]
@@ -27,18 +27,20 @@ class FMPProvider(AbstractFetcher):
     """
     Live FMP adaptor using the stable REST surface.
 
-    Requires ``FMP_API_KEY`` (env) or an explicit ``api_key=`` argument.
+    Set a key in user code (``hq.api_key = "..."``), pass ``api_key=``,
+    or export ``FMP_API_KEY``.
     """
 
     BASE_URL = "https://financialmodelingprep.com/stable"
 
     def __init__(self, api_key: Optional[str] = None, **kwargs) -> None:
-        super().__init__(api_key=api_key or os.getenv("FMP_API_KEY"), **kwargs)
+        super().__init__(api_key=resolve_api_key(api_key), **kwargs)
 
     def _require_api_key(self) -> str:
         if not self.api_key:
             raise ValueError(
-                "FMP API key required. Set FMP_API_KEY or pass api_key= to FMPProvider."
+                "FMP API key required. Set hq.api_key = '...', pass api_key=, "
+                "or export FMP_API_KEY."
             )
         return self.api_key
 

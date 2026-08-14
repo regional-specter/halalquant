@@ -27,11 +27,32 @@ def test_validate_date_range_order():
     assert end.isoformat() == "2024-06-01"
 
 
-def test_fmp_requires_api_key():
+def test_fmp_requires_api_key(monkeypatch):
+    monkeypatch.setattr("halalquant.config.api_key", None)
+    monkeypatch.delenv("FMP_API_KEY", raising=False)
     provider = FMPProvider(api_key=None)
     provider.api_key = None
     with pytest.raises(ValueError, match="FMP API key"):
         provider.get_prices(["AAPL"], start="2024-01-01", end="2024-01-31")
+
+
+def test_module_level_api_key(monkeypatch):
+    import halalquant as hq
+
+    monkeypatch.delenv("FMP_API_KEY", raising=False)
+    hq.api_key = "from-user-code"
+    try:
+        provider = FMPProvider()
+        assert provider.api_key == "from-user-code"
+    finally:
+        hq.api_key = None
+
+
+def test_download_accepts_api_key_argument(monkeypatch):
+    monkeypatch.setattr("halalquant.config.api_key", None)
+    monkeypatch.delenv("FMP_API_KEY", raising=False)
+    provider = FMPProvider(api_key="per-call-key")
+    assert provider.api_key == "per-call-key"
 
 
 @responses.activate

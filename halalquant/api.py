@@ -35,6 +35,7 @@ def download(
     start: Optional[DateLikeInput] = None,
     end: Optional[DateLikeInput] = None,
     provider: Optional[FMPProvider] = None,
+    api_key: Optional[str] = None,
     use_cache: bool = True,
     cache: Optional[LocalCache] = None,
     cache_path: Optional[Union[str, Path]] = None,
@@ -46,10 +47,13 @@ def download(
     Mirrors a simple yfinance.download() shape and returns a long DataFrame
     with normalized column names. By default results are served from the local
     DuckDB cache (``~/.halalquant/cache.duckdb``), fetching only missing symbols.
+
+    Set the vendor key once with ``hq.api_key = "..."``, pass ``api_key=`` here,
+    or export ``FMP_API_KEY``.
     """
     symbols = validate_symbols(tickers)
     start_date, end_date = validate_date_range(start, end)
-    client = provider or FMPProvider()
+    client = provider or FMPProvider(api_key=api_key)
     store = _build_cache(client, cache=cache, cache_path=cache_path, use_cache=use_cache)
     if store is None:
         return client.get_prices(symbols, start=start_date, end=end_date)
@@ -63,6 +67,7 @@ def get_halal_universe(
     as_of: Optional[DateLikeInput] = None,
     standard: str = "aaoifi",
     provider: Optional[FMPProvider] = None,
+    api_key: Optional[str] = None,
     apply_sector_filter: bool = True,
     use_cache: bool = True,
     cache: Optional[LocalCache] = None,
@@ -78,7 +83,7 @@ def get_halal_universe(
     3. Persist compliance flags into the local cache when caching is enabled
     """
     symbols = validate_symbols(tickers)
-    client = provider or FMPProvider()
+    client = provider or FMPProvider(api_key=api_key)
     store = _build_cache(client, cache=cache, cache_path=cache_path, use_cache=use_cache)
 
     if apply_sector_filter:

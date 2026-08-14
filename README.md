@@ -91,7 +91,13 @@ To run the automated test suite, install the dev extras:
 pip install -e ".[dev]"
 ```
 
-Set a vendor API key when you wire live fetches (providers are stubbed until then):
+Set a vendor API key in your script (recommended). The env var still works as a fallback:
+
+```python
+import halalquant as hq
+
+hq.api_key = "your_key_here"
+```
 
 ```bash
 export FMP_API_KEY="your_key_here"
@@ -179,10 +185,12 @@ class BaseScreener(ABC):
         ...
 ```
 
-Public usage mirrors a simple `yfinance`-style workflow (set `FMP_API_KEY` first):
+Public usage mirrors a simple `yfinance`-style workflow:
 
 ```python
 import halalquant as hq
+
+hq.api_key = "your_key_here"
 
 prices = hq.download("AAPL", start="2024-01-01", end="2024-06-01")
 universe = hq.get_halal_universe(["AAPL", "MSFT"], standard="aaoifi")
