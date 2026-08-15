@@ -1,4 +1,4 @@
-"""Public API tests against live yfinance and SEC EDGAR."""
+"""Public API tests against live yfinance, SEC EDGAR, and Yahoo statements."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import pytest
 
 import halalquant as hq
 from halalquant.base import COMPLIANCE_COLUMNS, METRIC_COLUMNS
-from halalquant.providers import SECEdgarProvider, YFinanceProvider
+from halalquant.providers import FilingsProvider, SECEdgarProvider, YFinanceProvider
 from halalquant.screening._compare import COMPARE_COLUMNS
 from halalquant.providers._yfinance import _map_yahoo_activity
 from halalquant.utils.validation import validate_date_range, validate_symbols
@@ -197,3 +197,60 @@ def test_missing_sec_issuer_returns_empty_metrics(
     )
     assert frame.empty
     assert list(frame.columns) == list(METRIC_COLUMNS)
+
+
+def test_non_us_universe_from_yahoo_statements(
+    market: YFinanceProvider,
+    composite_filings: FilingsProvider,
+) -> None:
+    compared = hq.compare_standards(
+        "NESN.SW",
+        provider=market,
+        filings=composite_filings,
+        apply_sector_filter=True,
+    )
+    assert len(compared) == 1
+    assert compared.iloc[0]["symbol"] == "NESN.SW"
+    assert pd.notna(compared.iloc[0]["debt_ratio"])
+    assert float(compared.iloc[0]["debt_ratio"]) >= 0
+
+
+def test_non_us_and_us_mix_routes_correctly(
+    market: YFinanceProvider,
+    composite_filings: FilingsProvider,
+) -> None:
+    from halalquant.providers._yfinance import YAHOO_PUBLICATION_LAG
+
+    compared = hq.compare_standards(
+        ["AAPL", "NESN.SW", "SAP.DE"],
+        provider=market,
+        filings=composite_filings,
+        apply_sector_filter=True,
+    )
+    assert {"AAPL", "NESN.SW", "SAP.DE"} <= set(compared["symbol"])
+    assert compared["debt_ratio"].notna().all()
+
+    nesn = composite_filings.get_balance_sheet(["NESN.SW"]).sort_values("report_date").iloc[-1]
+    lag = (pd.Timestamp(nesn["filed_date"]) - pd.Timestamp(nesn["report_date"])).days
+    assert lag == YAHOO_PUBLICATION_LAG.days
+
+    aapl = composite_filings.get_balance_sheet(["AAPL"])
+    fy2023 = aapl[pd.to_datetime(aapl["report_date"]) == pd.Timestamp("2023-09-30")]
+    assert not fy2023.empty
+    sec_filed = pd.Timestamp(fy2023.iloc[0]["filed_date"])
+    assert sec_filed.year == 2023
+    assert sec_filed != pd.Timestamp("2023-09-30") + YAHOO_PUBLICATION_LAG
+
+
+def test_non_us_bank_sector_exclusion(
+    market: YFinanceProvider,
+    composite_filings: FilingsProvider,
+) -> None:
+    screened = hq.compare_standards(
+        ["NESN.SW", "RY.TO"],
+        provider=market,
+        filings=composite_filings,
+        apply_sector_filter=True,
+    )
+    assert "NESN.SW" in set(screened["symbol"])
+    assert "RY.TO" not in set(screened["symbol"])

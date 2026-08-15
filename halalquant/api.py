@@ -8,7 +8,7 @@ from typing import Optional, Sequence, Union
 import pandas as pd
 
 from halalquant.base import METRIC_COLUMNS, BaseDataProvider, BaseScreener
-from halalquant.providers._sec_edgar import SECEdgarProvider
+from halalquant.providers._filings import FilingsProvider
 from halalquant.providers._yfinance import YFinanceProvider
 from halalquant.purification._purifier import Purifier
 from halalquant.screening._aaoifi import AAOIFIScreener, compute_ratios
@@ -44,14 +44,14 @@ def get_halal_universe(
     as_of: Optional[DateLikeInput] = None,
     standard: str = "aaoifi",
     provider: Optional[BaseDataProvider] = None,
-    filings: Optional[SECEdgarProvider] = None,
+    filings: Optional[BaseDataProvider] = None,
     apply_sector_filter: bool = True,
 ) -> pd.DataFrame:
     """
     Fetch fundamentals and return compliant tickers plus screening metrics.
 
-    Market data (prices, sector) comes from yfinance. US filings come from
-    SEC EDGAR. Screening math runs in this library.
+    Market data (prices, sector) comes from yfinance. Fundamentals come from
+    SEC EDGAR when a CIK exists, otherwise from Yahoo annual statements.
     """
     fundamentals = _prepare_universe_fundamentals(
         tickers,
@@ -67,7 +67,7 @@ def compare_standards(
     tickers: Union[str, Sequence[str]],
     as_of: Optional[DateLikeInput] = None,
     provider: Optional[BaseDataProvider] = None,
-    filings: Optional[SECEdgarProvider] = None,
+    filings: Optional[BaseDataProvider] = None,
     apply_sector_filter: bool = True,
 ) -> pd.DataFrame:
     """
@@ -91,7 +91,7 @@ def get_financial_metrics(
     start: Optional[DateLikeInput] = None,
     end: Optional[DateLikeInput] = None,
     provider: Optional[BaseDataProvider] = None,
-    filings: Optional[SECEdgarProvider] = None,
+    filings: Optional[BaseDataProvider] = None,
     freq: Optional[str] = None,
 ) -> pd.DataFrame:
     """
@@ -105,7 +105,7 @@ def get_financial_metrics(
     symbols = validate_symbols(tickers)
     start_date, end_date = validate_date_range(start, end)
     market = provider or YFinanceProvider()
-    statements = filings or SECEdgarProvider()
+    statements = filings or FilingsProvider()
 
     empty = pd.DataFrame(columns=list(METRIC_COLUMNS))
     fundamentals = statements.get_balance_sheet(symbols, as_of=end_date)
@@ -173,19 +173,19 @@ def purify_dividends(
     start: Optional[DateLikeInput] = None,
     end: Optional[DateLikeInput] = None,
     provider: Optional[BaseDataProvider] = None,
-    filings: Optional[SECEdgarProvider] = None,
+    filings: Optional[BaseDataProvider] = None,
 ) -> pd.DataFrame:
     """
-    Fetch dividends from yfinance and income from SEC, then purify.
+    Fetch dividends from yfinance and income from filings, then purify.
 
     Uses interest income / revenue as a conservative impure-income proxy when
     a finer breakdown is unavailable. Each dividend is matched to the latest
-    income statement that was already filed on the ex-date.
+    income statement that was already public on the ex-date.
     """
     symbols = validate_symbols(tickers)
     start_date, end_date = validate_date_range(start, end)
     market = provider or YFinanceProvider()
-    statements = filings or SECEdgarProvider()
+    statements = filings or FilingsProvider()
 
     if hasattr(market, "get_dividends"):
         dividends = market.get_dividends(symbols, start=start_date, end=end_date)
@@ -236,12 +236,12 @@ def _prepare_universe_fundamentals(
     tickers: Union[str, Sequence[str]],
     as_of: Optional[DateLikeInput] = None,
     provider: Optional[BaseDataProvider] = None,
-    filings: Optional[SECEdgarProvider] = None,
+    filings: Optional[BaseDataProvider] = None,
     apply_sector_filter: bool = True,
 ) -> pd.DataFrame:
     symbols = validate_symbols(tickers)
     market = provider or YFinanceProvider()
-    statements = filings or SECEdgarProvider()
+    statements = filings or FilingsProvider()
 
     if apply_sector_filter:
         sector_map: dict[str, str] = {}

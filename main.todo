@@ -75,7 +75,7 @@
 [x] List known limits in the README.
 
 ## 12. After 0.1.0
-[ ] Add non-US filing sources (SEC covers US issuers only).
+[x] Add non-US filing sources (SEC covers US issuers only).
 [x] Skip wiring the optional local cache into the public API.
 [x] Map bank and insurer XBRL tags so financial ratios are not empty without a sector filter.
 [x] Tighten purification so dividends use the latest income statement known on the ex-date.

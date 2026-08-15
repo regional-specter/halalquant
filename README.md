@@ -9,7 +9,7 @@
 </div>
 
 
-`halalquant` is a Python library for **Shariah-compliant quantitative strategies**. It sits on top of public market data (yfinance) and US filings (SEC EDGAR), then applies AAOIFI / DJIM screening, sector exclusions, and dividend purification. You get strategy-ready pandas DataFrames through a yfinance-shaped API — no paid vendor key required.
+`halalquant` is a Python library for **Shariah-compliant quantitative strategies**. It sits on top of public market data (yfinance) and filings (SEC EDGAR for US issuers/ADRs, Yahoo annual statements otherwise), then applies AAOIFI / DJIM screening, sector exclusions, and dividend purification. You get strategy-ready pandas DataFrames through a yfinance-shaped API — no paid vendor key required.
 
 The library is the **ingestion + compliance layer**: fetch prices, screen a universe, purify dividends, then feed clean frames into your own backtest or execution stack.
 
@@ -18,8 +18,8 @@ The library is the **ingestion + compliance layer**: fetch prices, screen a univ
 ## From Market Data to Strategy-Ready Signals
 
 ```text
-[ yfinance ]  prices, dividends, sector
-[ SEC EDGAR ]  US balance sheets & income (point-in-time filings)
+[ yfinance ]  prices, dividends, sector, non-US annual statements
+[ SEC EDGAR ]  US (and ADR) balance sheets & income (point-in-time filings)
         │
         ▼
 [ Shariah Screening Engine ]  AAOIFI / DJIM + sector filters
@@ -89,7 +89,7 @@ To run the automated test suite, install the dev extras:
 pip install -e ".[dev]"
 ```
 
-No API key is required. Prices and dividends come from yfinance; US fundamentals come from the public SEC EDGAR companyfacts API.
+No API key is required. Prices and dividends come from yfinance. US (and ADR) fundamentals come from the public SEC EDGAR companyfacts API; other issuers use Yahoo annual statements.
 
 ```python
 import halalquant as hq
@@ -114,8 +114,9 @@ halalquant/
 │   ├── base.py                      # BaseDataProvider and BaseScreener interfaces
 │   ├── providers/                   # Data adaptors
 │   │   ├── _base_provider.py        # HTTP helper used by SEC
-│   │   ├── _yfinance.py             # Prices, dividends, sector via yfinance
+│   │   ├── _yfinance.py             # Prices, dividends, sector; non-US statements
 │   │   ├── _sec_edgar.py            # US filings via SEC companyfacts
+│   │   ├── _filings.py              # Router: SEC if CIK exists, else Yahoo
 │   │   └── _fmp.py                  # Optional FMP adaptor (not used by the public API)
 │   ├── screening/                   # Shariah filtering logic
 │   │   ├── _aaoifi.py               # AAOIFI compliance engine (debt & liquidity math)
@@ -342,7 +343,7 @@ Interest income is used as a conservative proxy for non-compliant income when a 
 
 `download()`, `get_halal_universe()`, `compare_standards()`, `get_financial_metrics()`, and `purify_dividends()` fetch on demand and return pandas DataFrames. Nothing is written to a local database.
 
-Point-in-time helpers ensure you never use a filing that was not yet public on the decision date. SEC `filed_date` is the as-of cutoff.
+Point-in-time helpers ensure you never use a filing that was not yet public on the decision date. SEC `filed_date` is the as-of cutoff. Yahoo statements have no filing date, so non-US rows use `report_date + 90 days`.
 
 ```python
 # halalquant/utils/_pit_adjustments.py
@@ -361,7 +362,7 @@ This is the difference between a toy screener and a backtest-safe compliance eng
 
 ## Step 6: Verification & Testing
 
-We use `pytest` against the real public API: yfinance prices and SEC EDGAR filings. Screening-threshold math is checked with small numeric examples so 30% vs 33% cannot drift.
+We use `pytest` against the real public API: yfinance prices, SEC EDGAR filings, and Yahoo annual statements for non-US tickers. Screening-threshold math is checked with small numeric examples so 30% vs 33% cannot drift.
 
 Run the full test suite (needs network):
 
@@ -373,7 +374,7 @@ Current coverage includes:
 
 | Test file | What it verifies |
 | --- | --- |
-| `test_api.py` | Live `download` / `get_halal_universe` / `compare_standards` / metrics / purification |
+| `test_api.py` | Live `download` / `get_halal_universe` / `compare_standards` / metrics / purification / non-US Yahoo statements |
 | `test_sec_edgar.py` | Live SEC mapping for AAPL, JPM, MET (including original 10-K filed dates) |
 | `test_aaoifi_screening.py` | Debt / cash threshold pass-fail math |
 | `test_djim_screening.py` | DJIM 33% thresholds and AAOIFI vs DJIM disagreement |
@@ -419,7 +420,7 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] yfinance prices, dividends, and sector map
 - [x] SEC EDGAR companyfacts for US balance sheets and income
 - [x] Trailing 24-month market cap from prices × shares outstanding
-- [ ] Non-US filing sources (SEC covers US issuers)
+- [x] Non-US annual statements via Yahoo when no SEC CIK exists
 
 ### Screening
 
@@ -460,11 +461,7 @@ def test_evaluate_arrays_pass_and_fail():
 
 ## What's Next
 
-`v0.1.0` is tagged. Remaining follow-on work:
-
-1. **Non-US issuers** — SEC EDGAR only covers US filers
-
-The optional local cache is out of scope. Bank/insurer XBRL mapping and purification point-in-time matching are in.
+`v0.1.0` is tagged. Non-US issuers use Yahoo annual statements (90-day publication lag instead of a true `filed_date`). SEC remains the PIT source for US CIKs.
 
 Track the plain-English checklist in [`main.todo`](main.todo).
 

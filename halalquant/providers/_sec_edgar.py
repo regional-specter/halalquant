@@ -188,6 +188,13 @@ class SECEdgarProvider(AbstractFetcher):
             self._tickers = mapping
         return self._tickers
 
+    def has_cik(self, symbol: str) -> bool:
+        """True when the SEC ticker map has a CIK for this symbol."""
+        try:
+            return str(symbol).upper() in self._ticker_map()
+        except ValueError:
+            return False
+
     def _companyfacts(self, symbol: str) -> Optional[dict[str, Any]]:
         key = symbol.upper()
         if key in self._facts_cache:
