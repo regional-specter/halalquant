@@ -1,121 +1,40 @@
-"""SEC companyfacts mapping tests (no network)."""
+"""Live SEC EDGAR companyfacts mapping."""
 
-from halalquant.providers._sec_edgar import SECEdgarProvider
+from __future__ import annotations
 
-FACTS = {
-    "facts": {
-        "us-gaap": {
-            "DebtCurrent": {
-                "units": {
-                    "USD": [
-                        {
-                            "end": "2023-09-30",
-                            "filed": "2023-11-03",
-                            "val": 4.0,
-                            "form": "10-K",
-                            "fp": "FY",
-                        }
-                    ]
-                }
-            },
-            "LongTermDebt": {
-                "units": {
-                    "USD": [
-                        {
-                            "end": "2023-09-30",
-                            "filed": "2023-11-03",
-                            "val": 6.0,
-                            "form": "10-K",
-                            "fp": "FY",
-                        }
-                    ]
-                }
-            },
-            "CashAndCashEquivalentsAtCarryingValue": {
-                "units": {
-                    "USD": [
-                        {
-                            "end": "2023-09-30",
-                            "filed": "2023-11-03",
-                            "val": 50.0,
-                            "form": "10-K",
-                            "fp": "FY",
-                        }
-                    ]
-                }
-            },
-            "AccountsReceivableNetCurrent": {
-                "units": {
-                    "USD": [
-                        {
-                            "end": "2023-09-30",
-                            "filed": "2023-11-03",
-                            "val": 8.0,
-                            "form": "10-K",
-                            "fp": "FY",
-                        }
-                    ]
-                }
-            },
-            "CommonStockSharesOutstanding": {
-                "units": {
-                    "shares": [
-                        {
-                            "end": "2023-09-30",
-                            "filed": "2023-11-03",
-                            "val": 100.0,
-                            "form": "10-K",
-                            "fp": "FY",
-                        }
-                    ]
-                }
-            },
-            "Revenues": {
-                "units": {
-                    "USD": [
-                        {
-                            "end": "2023-09-30",
-                            "filed": "2023-11-03",
-                            "val": 100.0,
-                            "form": "10-K",
-                            "fp": "FY",
-                        }
-                    ]
-                }
-            },
-            "InvestmentIncomeInterest": {
-                "units": {
-                    "USD": [
-                        {
-                            "end": "2023-09-30",
-                            "filed": "2023-11-03",
-                            "val": 5.0,
-                            "form": "10-K",
-                            "fp": "FY",
-                        }
-                    ]
-                }
-            },
-        }
-    }
-}
+import pandas as pd
+
+from halalquant.providers import SECEdgarProvider
 
 
-def test_sec_maps_annual_balance_sheet():
-    provider = SECEdgarProvider()
-    frame = provider._facts_to_balance_sheet("AAPL", FACTS)
-    assert len(frame) == 1
-    row = frame.iloc[0]
-    assert row["symbol"] == "AAPL"
-    assert float(row["total_debt"]) == 10.0
-    assert float(row["cash_and_equiv"]) == 50.0
-    assert float(row["shares_outstanding"]) == 100.0
+def test_sec_maps_aapl_balance_sheet_and_income(filings: SECEdgarProvider) -> None:
+    balance = filings.get_balance_sheet(["AAPL"])
+    income = filings.get_income_statement(["AAPL"])
+    assert not balance.empty
+    latest = balance.sort_values("report_date").iloc[-1]
+    assert latest["symbol"] == "AAPL"
+    assert float(latest["cash_and_equiv"]) > 0
+    assert float(latest["total_debt"]) > 0
+    assert float(latest["shares_outstanding"]) > 0
+    assert not income.empty
+    assert income["total_revenue"].notna().any()
 
 
-def test_sec_maps_annual_income():
-    provider = SECEdgarProvider()
-    frame = provider._facts_to_income("AAPL", FACTS)
-    assert len(frame) == 1
-    row = frame.iloc[0]
-    assert float(row["total_revenue"]) == 100.0
-    assert float(row["non_compliant_income"]) == 5.0
+def test_sec_maps_bank_and_insurer_tags(filings: SECEdgarProvider) -> None:
+    jpm = filings.get_balance_sheet(["JPM"]).sort_values("report_date").iloc[-1]
+    met = filings.get_balance_sheet(["MET"]).sort_values("report_date").iloc[-1]
+    assert float(jpm["cash_and_equiv"]) > 0
+    assert float(jpm["interest_bearing_securities"]) > 0
+    assert float(jpm["receivables"]) > 1e11
+    assert float(jpm["total_debt"]) > 1e12
+    assert float(met["cash_and_equiv"]) > 0
+    assert float(met["total_debt"]) > 1e11
+
+
+def test_sec_keeps_original_10k_filed_date(filings: SECEdgarProvider) -> None:
+    balance = filings.get_balance_sheet(["AAPL"])
+    fy2023 = balance[pd.to_datetime(balance["report_date"]) == pd.Timestamp("2023-09-30")]
+    assert not fy2023.empty
+    filed = pd.Timestamp(fy2023.iloc[0]["filed_date"])
+    assert filed.year == 2023
+    assert filed <= pd.Timestamp("2023-11-30")

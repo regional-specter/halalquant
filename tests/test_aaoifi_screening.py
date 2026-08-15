@@ -2,8 +2,9 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from halalquant.screening._aaoifi import AAOIFIScreener
+from halalquant.screening._aaoifi import AAOIFIScreener, compute_ratios
 
 
 def test_evaluate_arrays_pass_and_fail():
@@ -35,3 +36,20 @@ def test_evaluate_compliance_dataframe():
     out = screener.evaluate_compliance(fundamentals)
     assert list(out["is_compliant"]) == [True, False]
     assert out.loc[0, "standard"] == "aaoifi"
+
+
+def test_compute_ratios_from_fundamentals():
+    frame = pd.DataFrame(
+        {
+            "total_debt": [20.0],
+            "cash_and_equiv": [10.0],
+            "interest_bearing_securities": [0.0],
+            "receivables": [8.0],
+            "liquid_assets": [0.0],
+            "market_cap_24m": [100.0],
+        }
+    )
+    ratios = compute_ratios(frame)
+    assert float(ratios.loc[0, "debt_ratio"]) == pytest.approx(0.20)
+    assert float(ratios.loc[0, "cash_ratio"]) == pytest.approx(0.10)
+    assert float(ratios.loc[0, "receivables_ratio"]) == pytest.approx(0.08)

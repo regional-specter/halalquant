@@ -132,14 +132,12 @@ halalquant/
 │       ├── _pit_adjustments.py      # Point-In-Time restatement logic (no look-ahead bias)
 │       └── validation.py            # Symbol and date range validators
 ├── tests/
-│   ├── test_aaoifi_screening.py     # Unit tests verifying financial ratio thresholds
-│   ├── test_djim_screening.py       # DJIM 33% thresholds + AAOIFI comparison
-│   ├── test_metrics.py              # Date-range financial metric helpers
-│   ├── test_purification.py         # Tests for dividend purification math
-│   ├── test_pit_data.py             # Look-ahead bias prevention tests
-│   ├── test_providers.py            # yfinance-shaped API + provider tests
-│   ├── test_sec_edgar.py            # SEC companyfacts mapping tests
-│   └── test_live_smoke.py           # Opt-in live Yahoo + SEC smoke (HALALQUANT_LIVE=1)
+│   ├── test_api.py                  # Live download / universe / compare / metrics / purify
+│   ├── test_aaoifi_screening.py     # AAOIFI threshold math
+│   ├── test_djim_screening.py       # DJIM 33% thresholds + AAOIFI comparison math
+│   ├── test_purification.py         # Purification formula
+│   ├── test_pit_data.py             # Look-ahead bias prevention helpers
+│   └── test_sec_edgar.py            # Live SEC companyfacts mapping
 ├── main.todo
 ├── pyproject.toml
 └── README.md
@@ -363,32 +361,24 @@ This is the difference between a toy screener and a backtest-safe compliance eng
 
 ## Step 6: Verification & Testing
 
-We use `pytest` to lock the screening math, purification formulas, PIT guards, yfinance adapters, and SEC tag mapping.
+We use `pytest` against the real public API: yfinance prices and SEC EDGAR filings. Screening-threshold math is checked with small numeric examples so 30% vs 33% cannot drift.
 
-Run the full test suite:
+Run the full test suite (needs network):
 
 ```bash
 pytest tests/
-```
-
-Live Yahoo + SEC checks are skipped unless you opt in (they hit the network):
-
-```bash
-HALALQUANT_LIVE=1 pytest tests/test_live_smoke.py -s
 ```
 
 Current coverage includes:
 
 | Test file | What it verifies |
 | --- | --- |
-| `test_aaoifi_screening.py` | Debt / cash threshold pass-fail masks |
+| `test_api.py` | Live `download` / `get_halal_universe` / `compare_standards` / metrics / purification |
+| `test_sec_edgar.py` | Live SEC mapping for AAPL, JPM, MET (including original 10-K filed dates) |
+| `test_aaoifi_screening.py` | Debt / cash threshold pass-fail math |
 | `test_djim_screening.py` | DJIM 33% thresholds and AAOIFI vs DJIM disagreement |
-| `test_metrics.py` | Date-range ratios, monthly PIT snapshots, `compare_standards()` |
 | `test_purification.py` | Impure ratio and purification amount |
 | `test_pit_data.py` | No look-ahead on filings or prices |
-| `test_providers.py` | yfinance-shaped `download()` / universe / purify path |
-| `test_sec_edgar.py` | SEC companyfacts → canonical schema |
-| `test_live_smoke.py` | Live `download` / `compare_standards` / metrics / purification |
 
 ### Example Test Case (`tests/test_aaoifi_screening.py`)
 
@@ -450,17 +440,17 @@ def test_evaluate_arrays_pass_and_fail():
 
 - [x] Point-in-time filing filter
 - [x] Point-in-time price cutoff
-- [ ] Optional local cache (not used by the public API)
+- [x] Bank / insurer us-gaap tags (deposits, loans, cash due from banks)
+- [x] Original 10-K filed date kept when later 10-Ks restate comparatives
 
 ### Tests
 
 - [x] AAOIFI screening
 - [x] Purification math
 - [x] PIT look-ahead guards
-- [x] yfinance adapter + public API tests
-- [x] SEC mapping tests
-- [x] DJIM unit tests
-- [x] Live yfinance + SEC smoke test
+- [x] Public API tests against live yfinance + SEC
+- [x] SEC mapping tests (AAPL / JPM / MET)
+- [x] DJIM threshold math
 
 ### Planned
 
@@ -470,12 +460,11 @@ def test_evaluate_arrays_pass_and_fail():
 
 ## What's Next
 
-`v0.1.0` is tagged. Follow-on work:
+`v0.1.0` is tagged. Remaining follow-on work:
 
 1. **Non-US issuers** — SEC EDGAR only covers US filers
-2. **Optional cache** — DuckDB/Parquet helpers exist but `download()` does not use them
-3. **Bank XBRL mapping** — without the sector filter, banks can look compliant because cash/receivables tags do not map
-4. **Purification PIT** — some dividends still attach an older income row when later filings restate prior periods
+
+The optional local cache is out of scope. Bank/insurer XBRL mapping and purification point-in-time matching are in.
 
 Track the plain-English checklist in [`main.todo`](main.todo).
 

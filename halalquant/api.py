@@ -323,7 +323,7 @@ def _join_income_metrics(panel: pd.DataFrame, income: pd.DataFrame) -> pd.DataFr
             pick = same_period if not same_period.empty else known
         else:
             pick = known
-        latest = pick.sort_values(["_filed", "_report"]).iloc[-1]
+        latest = pick.sort_values(["_report", "_filed"]).iloc[-1]
         revenues.append(latest.get("total_revenue"))
         impure_income.append(latest.get("non_compliant_income"))
     out["total_revenue"] = revenues
@@ -360,7 +360,7 @@ def _match_income_to_dividends(
             (income["symbol"] == div["symbol"]) & (income["_filed"] <= ex_ts)
         ]
         if not known.empty:
-            latest = known.sort_values(["_filed", "report_date"]).iloc[-1]
+            latest = known.sort_values(["report_date", "_filed"]).iloc[-1]
             payload["total_revenue"] = latest["total_revenue"]
             payload["non_compliant_income"] = latest["non_compliant_income"]
             payload["report_date"] = latest["report_date"]

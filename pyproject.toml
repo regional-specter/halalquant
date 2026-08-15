@@ -51,5 +51,5 @@ include = ["halalquant*"]
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
-    "network: hits live yfinance and SEC EDGAR (set HALALQUANT_LIVE=1)",
+    "network: hits live yfinance and SEC EDGAR",
 ]

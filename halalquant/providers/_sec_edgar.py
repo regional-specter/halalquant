@@ -14,29 +14,53 @@ from halalquant.providers._base_provider import AbstractFetcher
 TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
-# First matching tag wins for each field.
+# First tag that covers a given fiscal year wins. Later tags fill years the
+# preferred tag does not report (banks/insurers use different us-gaap names).
 BALANCE_TAGS: dict[str, tuple[str, ...]] = {
-    "short_term_debt": ("DebtCurrent", "ShortTermBorrowings", "CommercialPaper"),
+    "short_term_debt": (
+        "DebtCurrent",
+        "ShortTermBorrowings",
+        "CommercialPaper",
+        "FederalFundsPurchasedAndSecuritiesSoldUnderAgreementsToRepurchase",
+        "OtherShortTermBorrowings",
+    ),
     "long_term_debt": (
         "LongTermDebtNoncurrent",
-        "LongTermDebt",
+        "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
         "LongTermDebtAndCapitalLeaseObligations",
+        "LongTermDebt",
     ),
     "total_debt": ("LongTermDebtAndCapitalLeaseObligations", "LongTermDebt"),
+    "interest_bearing_liabilities": (
+        "Deposits",
+        "PolicyholderContractDeposits",
+        "PolicyholderFunds",
+    ),
     "cash_and_equiv": (
         "CashAndCashEquivalentsAtCarryingValue",
+        "CashAndDueFromBanks",
         "CashCashEquivalentsAndShortTermInvestments",
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
         "Cash",
     ),
     "interest_bearing_securities": (
         "ShortTermInvestments",
         "MarketableSecuritiesCurrent",
         "AvailableForSaleSecuritiesCurrent",
+        "InterestBearingDepositsInBanks",
+        "DebtSecuritiesAvailableForSaleExcludingAccruedInterest",
+        "AvailableForSaleSecuritiesDebtSecurities",
+        "DebtSecuritiesHeldToMaturityExcludingAccruedInterestAfterAllowanceForCreditLoss",
+        "AvailableForSaleSecurities",
     ),
     "receivables": (
         "AccountsReceivableNetCurrent",
         "AccountsReceivableNet",
         "ReceivablesNetCurrent",
+        "FinancingReceivableExcludingAccruedInterestAfterAllowanceForCreditLoss",
+        "LoansAndLeasesReceivableNetOfDeferredIncome",
+        "ReinsuranceRecoverables",
+        "PremiumsReceivable",
     ),
     "shares_outstanding": (
         "CommonStockSharesOutstanding",
@@ -60,6 +84,7 @@ INCOME_TAGS: dict[str, tuple[str, ...]] = {
         "InterestIncomeSecurities",
         "InvestmentIncomeInterestAndDividend",
         "InterestAndDividendIncome",
+        "InterestAndFeeIncomeLoansAndLeases",
     ),
 }
 
@@ -206,9 +231,13 @@ class SECEdgarProvider(AbstractFetcher):
                 total_debt = (short_debt or 0.0) + (long_debt or 0.0)
             else:
                 total_debt = tagged_total if tagged_total is not None else 0.0
+            deposits = _val(series["interest_bearing_liabilities"], end) or 0.0
+            total_debt = float(total_debt) + deposits
             cash = _val(series["cash_and_equiv"], end) or 0.0
             ibs = _val(series["interest_bearing_securities"], end) or 0.0
             receivables = _val(series["receivables"], end) or 0.0
+            if total_debt == 0.0 and cash == 0.0 and ibs == 0.0 and receivables == 0.0:
+                continue
             filed = _filed_for(series, end)
             rows.append(
                 {
@@ -252,6 +281,8 @@ class SECEdgarProvider(AbstractFetcher):
         for end in sorted(ends):
             revenue = _val(series["total_revenue"], end)
             interest = _val(series["interest_income"], end)
+            if revenue is None and interest is None:
+                continue
             filed = _filed_for(series, end)
             rows.append(
                 {
@@ -275,11 +306,20 @@ def _annual_series(
     as_of: Optional[str] = None,
     share_units: bool = False,
 ) -> dict[str, tuple[str, float]]:
-    """Map report end date -> (filed_date, value) for the first tag with annual facts."""
+    """
+    Map report end date -> (first_filed_date, value).
+
+    Tags are tried in order. A later tag only fills fiscal years the earlier
+    tags do not cover, so a stale industrial tag does not hide a bank tag.
+
+    ``first_filed_date`` is the earliest 10-K that reported that year (not a
+    later restatement). ``value`` is the latest revision with filed <= as_of.
+    """
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
     dei = facts.get("facts", {}).get("dei", {})
     as_of_ts = pd.Timestamp(as_of) if as_of else None
     unit_keys = ("shares",) if share_units else ("USD",)
+    best: dict[str, tuple[str, float]] = {}
 
     for tag in tags:
         node = us_gaap.get(tag) or dei.get(tag)
@@ -293,7 +333,7 @@ def _annual_series(
             for values in units.values():
                 if isinstance(values, list):
                     points.extend(values)
-        best: dict[str, tuple[str, float]] = {}
+        by_end: dict[str, list[tuple[str, float]]] = {}
         for point in points:
             if not isinstance(point, dict):
                 continue
@@ -305,17 +345,24 @@ def _annual_series(
             annual = form in ANNUAL_FORMS or fp == "FY"
             if not annual or not end or val is None:
                 continue
-            if as_of_ts is not None and filed and pd.Timestamp(filed) > as_of_ts:
+            try:
+                by_end.setdefault(str(end), []).append((str(filed), float(val)))
+            except (TypeError, ValueError):
                 continue
-            prev = best.get(end)
-            if prev is None or str(filed) >= prev[0]:
-                try:
-                    best[end] = (str(filed), float(val))
-                except (TypeError, ValueError):
-                    continue
-        if best:
-            return best
-    return {}
+        for end, pairs in by_end.items():
+            if end in best:
+                continue
+            usable = [
+                (filed, val)
+                for filed, val in pairs
+                if as_of_ts is None or pd.Timestamp(filed) <= as_of_ts
+            ]
+            if not usable:
+                continue
+            first_filed = min(filed for filed, _ in usable)
+            _, latest_val = max(usable, key=lambda item: item[0])
+            best[end] = (first_filed, latest_val)
+    return best
 
 
 def _val(series: dict[str, tuple[str, float]], end: str) -> Optional[float]:
@@ -324,8 +371,5 @@ def _val(series: dict[str, tuple[str, float]], end: str) -> Optional[float]:
 
 
 def _filed_for(series_map: dict[str, dict[str, tuple[str, float]]], end: str) -> Optional[str]:
-    for values in series_map.values():
-        item = values.get(end)
-        if item:
-            return item[0]
-    return None
+    dates = [values[end][0] for values in series_map.values() if end in values]
+    return min(dates) if dates else None
