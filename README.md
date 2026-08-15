@@ -40,6 +40,8 @@ The library is the **ingestion + compliance layer**: fetch prices, screen a univ
 * [Who this is for](#who-this-is-for)
 * [Prerequisites](#prerequisites)
 * [Setup & Installation](#setup--installation)
+* [Worked example](#worked-example)
+* [Full function guide](USAGE.md)
 * [Code Structure](#code-structure)
 * [Step 1: The Unified Data API](#step-1-the-unified-data-api)
 * [Step 2: Financial Ratio Screening (The Math)](#step-2-financial-ratio-screening-the-math)
@@ -54,7 +56,7 @@ The library is the **ingestion + compliance layer**: fetch prices, screen a univ
 
 ## Who this is for
 
-* **If you are a student of Islamic finance / quant:** Read top to bottom. Each section starts with the screening formula, then shows the vectorized Python implementation.
+* **If you are a student of Islamic finance / quant:** Start with [USAGE.md](USAGE.md) to see each function’s output, then read this README top to bottom for the screening math.
 * **If you are a developer:** The repo is an editable Python package. Clone it, inspect the modules, run `pytest`, and `import halalquant` into your own strategies the same way you would use `yfinance`.
 * **If you are building a halal backtest stack:** This library is the ingestion + compliance layer—screen the universe, purify dividends, then feed clean frames into your execution or research engine.
 
@@ -101,6 +103,46 @@ comparison = hq.compare_standards(["AAPL", "MSFT"])
 metrics = hq.get_financial_metrics("AAPL", start="2020-01-01", end="2024-12-31")
 ```
 
+What each call is for, with captured DataFrames, is in **[USAGE.md](USAGE.md)**. Re-generate the snapshots with `python examples/walkthrough.py`.
+
+---
+
+## Worked example
+
+`download` returns a long OHLCV frame (captured 15 Aug 2026):
+
+```python
+hq.download("AAPL", start="2024-01-02", end="2024-01-08")
+```
+
+```text
+symbol       date     open     high      low    close   volume  adj_close
+  AAPL 2024-01-02 187.1500 188.4400 183.8900 185.6400 82488700   183.4040
+  AAPL 2024-01-03 184.2200 185.8800 183.4300 184.2500 58414500   182.0308
+  AAPL 2024-01-04 182.1500 183.0900 180.8800 181.9100 71983600   179.7189
+  AAPL 2024-01-05 181.9900 182.7600 180.1700 181.1800 62379700   178.9977
+```
+
+`get_halal_universe` keeps names that pass AAOIFI and drops excluded sectors. `JPM` is not in the result because conventional banking is filtered before ratios run:
+
+```python
+hq.get_halal_universe(["AAPL", "MSFT", "JPM"])
+```
+
+```text
+symbol      as_of  is_compliant  debt_ratio  cash_ratio  receivables_ratio standard                          reason
+  AAPL 2025-09-27          True      0.0280      0.0177             0.0306   aaoifi passes AAOIFI financial screens
+  MSFT 2026-06-30          True      0.0095      0.0234             0.0481   aaoifi passes AAOIFI financial screens
+```
+
+| Function | Use it when you need… |
+| --- | --- |
+| `download()` | Price history for a backtest |
+| `get_halal_universe()` | The names that pass AAOIFI or DJIM *now* |
+| `compare_standards()` | Both verdicts on the same tickers (failures stay in the table) |
+| `get_financial_metrics()` | Ratio history, or month/quarter snapshots with `freq="ME"` / `"QE"` |
+| `purify_dividends()` | The share of each dividend to donate |
+
 ---
 
 ## Code Structure
@@ -132,6 +174,8 @@ halalquant/
 │   └── utils/                       # Shared helpers
 │       ├── _pit_adjustments.py      # Point-In-Time restatement logic (no look-ahead bias)
 │       └── validation.py            # Symbol and date range validators
+├── examples/
+│   └── walkthrough.py               # Prints live DataFrames for USAGE.md
 ├── tests/
 │   ├── test_api.py                  # Live download / universe / compare / metrics / purify
 │   ├── test_aaoifi_screening.py     # AAOIFI threshold math
@@ -139,6 +183,7 @@ halalquant/
 │   ├── test_purification.py         # Purification formula
 │   ├── test_pit_data.py             # Look-ahead bias prevention helpers
 │   └── test_sec_edgar.py            # Live SEC companyfacts mapping
+├── USAGE.md                         # Function-by-function guide with captured output
 ├── main.todo
 ├── pyproject.toml
 └── README.md
@@ -201,6 +246,8 @@ purified = hq.purify_dividends("AAPL", start="2024-01-01", end="2024-12-31")
 comparison = hq.compare_standards(["AAPL", "MSFT"])
 metrics = hq.get_financial_metrics("AAPL", start="2020-01-01", end="2024-12-31")
 ```
+
+Annotated output for every call is in [USAGE.md](USAGE.md).
 
 ---
 
@@ -368,6 +415,7 @@ Run the full test suite (needs network):
 
 ```bash
 pytest tests/
+python examples/walkthrough.py   # live DataFrames for USAGE.md
 ```
 
 Current coverage includes:
