@@ -7,16 +7,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Contributions Welcome](https://img.shields.io/badge/Contributions-Welcome-brightgreen)](https://github.com/regional-specter/halalquant/issues)
 
+<div align="center">
+  <img src="docs/showcase.svg" alt="halalquant screening a mixed universe under AAOIFI and DJIM, plus AAPL dividend purification" width="920">
+</div>
+
 </div>
 
 
 `halalquant` is a Python library for **Shariah-compliant quantitative strategies**. It sits on top of public market data (yfinance) and filings (SEC EDGAR for US issuers/ADRs, Yahoo annual statements otherwise), then applies AAOIFI / DJIM screening, sector exclusions, and dividend purification. You get strategy-ready pandas DataFrames through a yfinance-shaped API — no paid vendor key required.
 
 The library is the **ingestion + compliance layer**: fetch prices, screen a universe, purify dividends, then feed clean frames into your own backtest or execution stack.
-
-<div align="center">
-  <img src="docs/showcase.svg" alt="halalquant screening a mixed universe under AAOIFI and DJIM, plus AAPL dividend purification" width="920">
-</div>
 
 <p align="center"><sub>Live output of <code>python -m halalquant</code> — ratios move with the market.</sub></p>
 
