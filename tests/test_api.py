@@ -26,6 +26,8 @@ def test_validate_date_range_order():
 def test_map_yahoo_banks_to_exclusion_label():
     assert _map_yahoo_activity("Financial Services", "Banks - Diversified") == "conventional banking"
     assert _map_yahoo_activity("Technology", "Consumer Electronics") == "technology"
+    assert _map_yahoo_activity("Consumer Defensive", "Beverages - Non-Alcoholic") == "consumer defensive"
+    assert _map_yahoo_activity("Consumer Defensive", "Beverages - Brewers") == "alcohol"
 
 
 def test_download_aapl_prices(market: YFinanceProvider) -> None:

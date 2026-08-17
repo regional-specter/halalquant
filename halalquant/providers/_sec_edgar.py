@@ -106,7 +106,7 @@ class SECEdgarProvider(AbstractFetcher):
         ua = (
             user_agent
             or os.getenv("HALALQUANT_SEC_UA")
-            or "HalalQuant/0.1.0 support@halalquant.local"
+            or "HalalQuant/0.1.0 (+https://github.com/regional-specter/halalquant)"
         )
         self.session.headers.update(
             {

@@ -3,8 +3,9 @@
 # Shariah-Compliant Quant Data Engine
 
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![PyPI](https://img.shields.io/pypi/v/halalquant)](https://pypi.org/project/halalquant/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Contributions Welcome](https://img.shields.io/badge/Contributions-Welcome-brightgreen)](https://github.com/your-username/halalquant/issues)
+[![Contributions Welcome](https://img.shields.io/badge/Contributions-Welcome-brightgreen)](https://github.com/regional-specter/halalquant/issues)
 
 </div>
 
@@ -12,6 +13,12 @@
 `halalquant` is a Python library for **Shariah-compliant quantitative strategies**. It sits on top of public market data (yfinance) and filings (SEC EDGAR for US issuers/ADRs, Yahoo annual statements otherwise), then applies AAOIFI / DJIM screening, sector exclusions, and dividend purification. You get strategy-ready pandas DataFrames through a yfinance-shaped API — no paid vendor key required.
 
 The library is the **ingestion + compliance layer**: fetch prices, screen a universe, purify dividends, then feed clean frames into your own backtest or execution stack.
+
+<div align="center">
+  <img src="docs/showcase.svg" alt="halalquant screening a mixed universe under AAOIFI and DJIM, plus AAPL dividend purification" width="920">
+</div>
+
+<p align="center"><sub>Live output of <code>python -m halalquant</code> — ratios move with the market.</sub></p>
 
 ---
 
@@ -40,6 +47,7 @@ The library is the **ingestion + compliance layer**: fetch prices, screen a univ
 * [Who this is for](#who-this-is-for)
 * [Prerequisites](#prerequisites)
 * [Setup & Installation](#setup--installation)
+* [See it in action](#see-it-in-action)
 * [Worked example](#worked-example)
 * [Full function guide](USAGE.md)
 * [Code Structure](#code-structure)
@@ -71,27 +79,29 @@ You need a basic understanding of Python Object-Oriented Programming (OOP), pand
 | **Python OOP** | Classes, Inheritance, Abstract Base Classes | [Python OOP Tutorial](https://docs.python.org/3/tutorial/classes.html) |
 | **pandas / NumPy** | Vectorized ratios, boolean masks, DataFrame schemas | [pandas User Guide](https://pandas.pydata.org/docs/user_guide/index.html) |
 | **Shariah screening** | AAOIFI / DJIM financial thresholds | [AAOIFI Standards overview](https://aaoifi.com/) |
-| **Point-in-time data** | Filing dates vs report dates (no look-ahead) | [Quantopian / Zipline PIT concepts](https://www.quantopian.com/) |
+| **Point-in-time data** | Filing dates vs report dates (no look-ahead) | SEC `filed_date` is the as-of cutoff in this library |
 
 ---
 
 ## Setup & Installation
 
-Clone the repository and install it in editable mode (`-e`). This places `halalquant` on your Python import path so you can import it from anywhere on your system.
+Requires Python 3.9+. No API key.
 
 ```bash
-git clone https://github.com/your-username/halalquant.git
+pip install halalquant
+```
+
+From a clone (editable, with tests and the README demo):
+
+```bash
+git clone https://github.com/regional-specter/halalquant.git
 cd halalquant
-pip install -e .
+pip install -e ".[dev,examples]"
 ```
 
-To run the automated test suite, install the dev extras:
+Optional extras: `[examples]` (Rich terminal demo), `[cache]` (DuckDB + Parquet local store), `[dev]` (pytest).
 
-```bash
-pip install -e ".[dev]"
-```
-
-No API key is required. Prices and dividends come from yfinance. US (and ADR) fundamentals come from the public SEC EDGAR companyfacts API; other issuers use Yahoo annual statements.
+Prices and dividends come from yfinance. US (and ADR) fundamentals come from the public SEC EDGAR companyfacts API; other issuers use Yahoo annual statements.
 
 ```python
 import halalquant as hq
@@ -104,6 +114,18 @@ metrics = hq.get_financial_metrics("AAPL", start="2020-01-01", end="2024-12-31")
 ```
 
 What each call is for, with captured DataFrames, is in **[USAGE.md](USAGE.md)**. Re-generate the snapshots with `python examples/walkthrough.py`.
+
+---
+
+## See it in action
+
+```bash
+pip install "halalquant[examples]"
+python -m halalquant                        # terminal tables
+python -m halalquant --svg                  # rewrite docs/showcase.svg
+```
+
+The demo screens a mixed universe (a bank is excluded before ratios run) and shows how much of each AAPL dividend to donate. From a clone you can also run `python examples/showcase.py`.
 
 ---
 
@@ -151,6 +173,8 @@ symbol      as_of  is_compliant  debt_ratio  cash_ratio  receivables_ratio stand
 halalquant/
 ├── halalquant/                       # Core library package
 │   ├── __init__.py                  # Exposes top-level data loaders
+│   ├── __main__.py                  # python -m halalquant → Rich demo
+│   ├── showcase.py                  # Rich terminal demo (README screenshot)
 │   ├── api.py                       # download(), get_halal_universe(), purify_dividends(),
 │   │                                # compare_standards(), get_financial_metrics()
 │   ├── base.py                      # BaseDataProvider and BaseScreener interfaces
@@ -167,7 +191,7 @@ halalquant/
 │   │   └── _sector_filter.py        # Sector / business activity exclusion matrix
 │   ├── purification/                # Dividend purification utilities
 │   │   └── _purifier.py             # Impure income ratio calculators
-│   ├── database/                    # Optional storage helpers (not used by download())
+│   ├── database/                    # Optional local store: pip install "halalquant[cache]"
 │   │   ├── _cache.py                # Cache-before-fetch + Parquet mirrors
 │   │   ├── _duckdb_driver.py        # Vectorized local SQL query engine
 │   │   └── _models.py               # Database schemas (prices, balance sheets, flags)
@@ -175,7 +199,10 @@ halalquant/
 │       ├── _pit_adjustments.py      # Point-In-Time restatement logic (no look-ahead bias)
 │       └── validation.py            # Symbol and date range validators
 ├── examples/
+│   ├── showcase.py                  # same demo: python examples/showcase.py
 │   └── walkthrough.py               # Prints live DataFrames for USAGE.md
+├── docs/
+│   └── showcase.svg                 # Captured output of showcase.py
 ├── tests/
 │   ├── test_api.py                  # Live download / universe / compare / metrics / purify
 │   ├── test_aaoifi_screening.py     # AAOIFI threshold math

@@ -2,11 +2,7 @@
 
 This is the function-by-function guide. The [README](README.md) explains the math and package layout; this file shows **when to call each public function** and what a real DataFrame looks like.
 
-Snapshots were captured on 15 August 2026 against live yfinance and SEC EDGAR. Prices, ratios, and filing dates will move. Re-run the same snippets with:
-
-```bash
-python examples/walkthrough.py
-```
+Snapshots were captured on 15 August 2026 against live yfinance and SEC EDGAR. Prices, ratios, and filing dates will move. Re-run the same snippets with `python examples/walkthrough.py`. For a color terminal table of the live screen, run `python -m halalquant` (needs `pip install "halalquant[examples]"`).
 
 No API key is required.
 

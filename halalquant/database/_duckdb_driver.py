@@ -5,16 +5,27 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Union
 
-import duckdb
 import pandas as pd
 
 from halalquant.database._models import SCHEMA_SQL
+
+try:
+    import duckdb
+except ImportError as exc:  # pragma: no cover
+    duckdb = None  # type: ignore[assignment]
+    _DUCKDB_IMPORT_ERROR: Optional[BaseException] = exc
+else:
+    _DUCKDB_IMPORT_ERROR = None
+
+_CACHE_EXTRA_HINT = "Optional cache extras are missing. Install with: pip install 'halalquant[cache]'"
 
 
 class DuckDBDriver:
     """Thin DuckDB wrapper for local cache read/write."""
 
     def __init__(self, path: Optional[Union[str, Path]] = None) -> None:
+        if duckdb is None:
+            raise ImportError(_CACHE_EXTRA_HINT) from _DUCKDB_IMPORT_ERROR
         self.path = str(path) if path else ":memory:"
         self.con = duckdb.connect(self.path)
         self.init_schema()

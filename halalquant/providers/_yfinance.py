@@ -228,7 +228,9 @@ def _map_yahoo_activity(sector: str, industry: str) -> str:
         return "tobacco"
     if any(token in blob for token in ("defense", "weapons", "aerospace & defense")):
         return "defense"
-    if any(token in blob for token in ("brewers", "wineries", "distiller", "alcoholic")):
+    if any(token in blob for token in ("brewers", "wineries", "distiller")):
+        return "alcohol"
+    if "alcoholic" in blob and "non-alcoholic" not in blob:
         return "alcohol"
     if "adult" in blob:
         return "adult entertainment"

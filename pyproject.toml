@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,41 +7,63 @@ name = "halalquant"
 version = "0.1.0"
 description = "Shariah-compliant quant library: yfinance market data, SEC filings, AAOIFI/DJIM screening, and dividend purification."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
-authors = [{ name = "Halal-Quant" }]
-keywords = ["shariah", "halal", "quant", "finance", "screening", "aaoifi"]
+authors = [{ name = "Specter" }]
+keywords = [
+    "shariah",
+    "halal",
+    "quant",
+    "finance",
+    "screening",
+    "aaoifi",
+    "djim",
+    "islamic-finance",
+    "purification",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Financial and Insurance Industry",
-    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Office/Business :: Financial :: Investment",
 ]
 dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",
     "yfinance>=0.2.40",
-    "duckdb>=0.10",
-    "pyarrow>=14.0",
     "requests>=2.31",
 ]
 
 [project.optional-dependencies]
+cache = [
+    "duckdb>=0.10",
+    "pyarrow>=14.0",
+]
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
     "responses>=0.25",
+    "duckdb>=0.10",
+    "pyarrow>=14.0",
+    "rich>=13.7",
+]
+examples = [
+    "rich>=13.7",
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-username/halalquant"
-Repository = "https://github.com/your-username/halalquant"
+Homepage = "https://github.com/regional-specter/halalquant"
+Repository = "https://github.com/regional-specter/halalquant"
+Issues = "https://github.com/regional-specter/halalquant/issues"
+Documentation = "https://github.com/regional-specter/halalquant#readme"
 
 [tool.setuptools.packages.find]
 where = ["."]
