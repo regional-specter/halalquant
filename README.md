@@ -8,7 +8,7 @@
 [![Contributions Welcome](https://img.shields.io/badge/Contributions-Welcome-brightgreen)](https://github.com/regional-specter/halalquant/issues)
 
 <div align="center">
-  <img src="docs/showcase.svg" alt="halalquant screening a mixed universe under AAOIFI and DJIM, plus AAPL dividend purification" width="920">
+  <img src="docs/showcase.svg" alt="halalquant screening a mixed universe under AAOIFI and DJIM, plus AAPL dividend purification" width="520">
 </div>
 
 </div>
