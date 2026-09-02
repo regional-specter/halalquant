@@ -108,18 +108,12 @@ def get_financial_metrics(
     statements = filings or FilingsProvider()
 
     empty = pd.DataFrame(columns=list(METRIC_COLUMNS))
-    fundamentals = statements.get_balance_sheet(symbols, as_of=end_date)
-    if fundamentals.empty:
-        return empty
-
-    fundamentals = known_filings(fundamentals, as_of=str(end_date)[:10])
+    fundamentals = statements.get_balance_sheet(symbols, as_of=None)
     if fundamentals.empty:
         return empty
 
     prices = _prices_for_fundamentals(market, fundamentals, as_of=end_date)
-    income = statements.get_income_statement(symbols, as_of=end_date)
-    if not income.empty:
-        income = known_filings(income, as_of=str(end_date)[:10])
+    income = statements.get_income_statement(symbols, as_of=None)
 
     if freq:
         pandas_freq = _normalize_freq(freq)
@@ -142,6 +136,11 @@ def get_financial_metrics(
             return empty
         panel = pd.concat(snapshots, ignore_index=True)
     else:
+        fundamentals = known_filings(fundamentals, as_of=str(end_date)[:10])
+        if fundamentals.empty:
+            return empty
+        if not income.empty:
+            income = known_filings(income, as_of=str(end_date)[:10])
         report_ts = pd.to_datetime(fundamentals["report_date"], errors="coerce")
         start_ts = pd.Timestamp(start_date)
         end_ts = pd.Timestamp(end_date)

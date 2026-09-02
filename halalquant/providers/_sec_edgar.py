@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 from typing import Any, Optional, Sequence
 
 import pandas as pd
@@ -89,6 +90,9 @@ INCOME_TAGS: dict[str, tuple[str, ...]] = {
 }
 
 ANNUAL_FORMS = {"10-K", "10-K/A"}
+DEFAULT_SEC_USER_AGENT = (
+    "HalalQuant/0.1.0 (halalquant-research@example.com; override with HALALQUANT_SEC_UA)"
+)
 
 
 class SECEdgarProvider(AbstractFetcher):
@@ -103,11 +107,7 @@ class SECEdgarProvider(AbstractFetcher):
 
     def __init__(self, user_agent: Optional[str] = None, **kwargs) -> None:
         super().__init__(**kwargs)
-        ua = (
-            user_agent
-            or os.getenv("HALALQUANT_SEC_UA")
-            or "HalalQuant/0.1.0 (+https://github.com/regional-specter/halalquant)"
-        )
+        ua = user_agent or os.getenv("HALALQUANT_SEC_UA") or DEFAULT_SEC_USER_AGENT
         self.session.headers.update(
             {
                 "User-Agent": ua,
@@ -219,38 +219,40 @@ class SECEdgarProvider(AbstractFetcher):
         facts: dict[str, Any],
         as_of: Optional[str] = None,
     ) -> pd.DataFrame:
-        series = {
-            field: _annual_series(facts, tags, as_of=as_of, share_units=field == "shares_outstanding")
-            for field, tags in BALANCE_TAGS.items()
-        }
-        ends = set()
-        for values in series.values():
-            ends.update(values.keys())
-        if not ends:
+        merged: dict[tuple[str, str], dict[str, Optional[float]]] = defaultdict(dict)
+        for field, tags in BALANCE_TAGS.items():
+            for end, filed, val in _iter_annual_points(
+                facts,
+                tags,
+                as_of=as_of,
+                share_units=field == "shares_outstanding",
+            ):
+                merged[(end, filed)][field] = val
+
+        if not merged:
             return pd.DataFrame()
 
         rows: list[dict[str, Any]] = []
-        for end in sorted(ends):
-            short_debt = _val(series["short_term_debt"], end)
-            long_debt = _val(series["long_term_debt"], end)
-            tagged_total = _val(series["total_debt"], end)
+        for (end, filed), vals in sorted(merged.items()):
+            short_debt = vals.get("short_term_debt")
+            long_debt = vals.get("long_term_debt")
+            tagged_total = vals.get("total_debt")
             if short_debt is not None or long_debt is not None:
                 total_debt = (short_debt or 0.0) + (long_debt or 0.0)
             else:
                 total_debt = tagged_total if tagged_total is not None else 0.0
-            deposits = _val(series["interest_bearing_liabilities"], end) or 0.0
+            deposits = vals.get("interest_bearing_liabilities") or 0.0
             total_debt = float(total_debt) + deposits
-            cash = _val(series["cash_and_equiv"], end) or 0.0
-            ibs = _val(series["interest_bearing_securities"], end) or 0.0
-            receivables = _val(series["receivables"], end) or 0.0
+            cash = vals.get("cash_and_equiv") or 0.0
+            ibs = vals.get("interest_bearing_securities") or 0.0
+            receivables = vals.get("receivables") or 0.0
             if total_debt == 0.0 and cash == 0.0 and ibs == 0.0 and receivables == 0.0:
                 continue
-            filed = _filed_for(series, end)
             rows.append(
                 {
                     "symbol": symbol,
                     "report_date": end,
-                    "filed_date": filed or end,
+                    "filed_date": filed,
                     "total_debt": total_debt,
                     "short_term_debt": short_debt,
                     "long_term_debt": long_debt,
@@ -260,7 +262,7 @@ class SECEdgarProvider(AbstractFetcher):
                     "liquid_assets": cash + ibs,
                     "market_cap": None,
                     "market_cap_24m": None,
-                    "shares_outstanding": _val(series["shares_outstanding"], end),
+                    "shares_outstanding": vals.get("shares_outstanding"),
                 }
             )
         frame = pd.DataFrame(rows)
@@ -274,28 +276,25 @@ class SECEdgarProvider(AbstractFetcher):
         facts: dict[str, Any],
         as_of: Optional[str] = None,
     ) -> pd.DataFrame:
-        series = {
-            field: _annual_series(facts, tags, as_of=as_of)
-            for field, tags in INCOME_TAGS.items()
-        }
-        ends = set()
-        for values in series.values():
-            ends.update(values.keys())
-        if not ends:
+        merged: dict[tuple[str, str], dict[str, Optional[float]]] = defaultdict(dict)
+        for field, tags in INCOME_TAGS.items():
+            for end, filed, val in _iter_annual_points(facts, tags, as_of=as_of):
+                merged[(end, filed)][field] = val
+
+        if not merged:
             return pd.DataFrame(columns=list(INCOME_COLUMNS))
 
         rows: list[dict[str, Any]] = []
-        for end in sorted(ends):
-            revenue = _val(series["total_revenue"], end)
-            interest = _val(series["interest_income"], end)
+        for (end, filed), vals in sorted(merged.items()):
+            revenue = vals.get("total_revenue")
+            interest = vals.get("interest_income")
             if revenue is None and interest is None:
                 continue
-            filed = _filed_for(series, end)
             rows.append(
                 {
                     "symbol": symbol,
                     "report_date": end,
-                    "filed_date": filed or end,
+                    "filed_date": filed,
                     "total_revenue": revenue,
                     "interest_income": interest,
                     "non_compliant_income": interest,
@@ -307,26 +306,24 @@ class SECEdgarProvider(AbstractFetcher):
         return frame[list(INCOME_COLUMNS)]
 
 
-def _annual_series(
+def _iter_annual_points(
     facts: dict[str, Any],
     tags: Sequence[str],
     as_of: Optional[str] = None,
     share_units: bool = False,
-) -> dict[str, tuple[str, float]]:
+) -> list[tuple[str, str, float]]:
     """
-    Map report end date -> (first_filed_date, value).
+    Return one (report_end, filed_date, value) row per annual XBRL filing.
 
-    Tags are tried in order. A later tag only fills fiscal years the earlier
-    tags do not cover, so a stale industrial tag does not hide a bank tag.
-
-    ``first_filed_date`` is the earliest 10-K that reported that year (not a
-    later restatement). ``value`` is the latest revision with filed <= as_of.
+    Each SEC filing revision is kept so monthly point-in-time screens can use
+    the values that were actually public on each snapshot date.
     """
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
     dei = facts.get("facts", {}).get("dei", {})
     as_of_ts = pd.Timestamp(as_of) if as_of else None
     unit_keys = ("shares",) if share_units else ("USD",)
-    best: dict[str, tuple[str, float]] = {}
+    seen: set[tuple[str, str]] = set()
+    rows: list[tuple[str, str, float]] = []
 
     for tag in tags:
         node = us_gaap.get(tag) or dei.get(tag)
@@ -340,7 +337,6 @@ def _annual_series(
             for values in units.values():
                 if isinstance(values, list):
                     points.extend(values)
-        by_end: dict[str, list[tuple[str, float]]] = {}
         for point in points:
             if not isinstance(point, dict):
                 continue
@@ -350,33 +346,16 @@ def _annual_series(
             form = str(point.get("form") or "")
             fp = str(point.get("fp") or "")
             annual = form in ANNUAL_FORMS or fp == "FY"
-            if not annual or not end or val is None:
+            if not annual or not end or filed is None or val is None:
                 continue
+            if as_of_ts is not None and pd.Timestamp(filed) > as_of_ts:
+                continue
+            end_s, filed_s = str(end), str(filed)
+            if (end_s, filed_s) in seen:
+                continue
+            seen.add((end_s, filed_s))
             try:
-                by_end.setdefault(str(end), []).append((str(filed), float(val)))
+                rows.append((end_s, filed_s, float(val)))
             except (TypeError, ValueError):
                 continue
-        for end, pairs in by_end.items():
-            if end in best:
-                continue
-            usable = [
-                (filed, val)
-                for filed, val in pairs
-                if as_of_ts is None or pd.Timestamp(filed) <= as_of_ts
-            ]
-            if not usable:
-                continue
-            first_filed = min(filed for filed, _ in usable)
-            _, latest_val = max(usable, key=lambda item: item[0])
-            best[end] = (first_filed, latest_val)
-    return best
-
-
-def _val(series: dict[str, tuple[str, float]], end: str) -> Optional[float]:
-    item = series.get(end)
-    return item[1] if item else None
-
-
-def _filed_for(series_map: dict[str, dict[str, tuple[str, float]]], end: str) -> Optional[str]:
-    dates = [values[end][0] for values in series_map.values() if end in values]
-    return min(dates) if dates else None
+    return rows

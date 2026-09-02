@@ -35,6 +35,12 @@ def test_sec_keeps_original_10k_filed_date(filings: SECEdgarProvider) -> None:
     balance = filings.get_balance_sheet(["AAPL"])
     fy2023 = balance[pd.to_datetime(balance["report_date"]) == pd.Timestamp("2023-09-30")]
     assert not fy2023.empty
-    filed = pd.Timestamp(fy2023.iloc[0]["filed_date"])
+    filed = pd.Timestamp(fy2023["filed_date"].min())
     assert filed.year == 2023
     assert filed <= pd.Timestamp("2023-11-30")
+
+
+def test_sec_balance_sheet_history_depth(filings: SECEdgarProvider) -> None:
+    balance = filings.get_balance_sheet(["AAPL"])
+    earliest = pd.Timestamp(balance["report_date"].min())
+    assert earliest.year <= 2010

@@ -186,6 +186,23 @@ def test_get_financial_metrics_monthly_snapshots(
     assert last == "2023-09-30"
 
 
+def test_get_financial_metrics_monthly_from_2019(
+    market: YFinanceProvider,
+    filings: SECEdgarProvider,
+) -> None:
+    frame = hq.get_financial_metrics(
+        "AAPL",
+        start="2019-01-01",
+        end="2019-12-31",
+        provider=market,
+        filings=filings,
+        freq="ME",
+    )
+    assert not frame.empty
+    assert pd.Timestamp(frame["as_of"].min()).date().isoformat() == "2019-01-31"
+    assert frame["debt_ratio"].notna().any()
+
+
 def test_missing_sec_issuer_returns_empty_metrics(
     market: YFinanceProvider,
     filings: SECEdgarProvider,
