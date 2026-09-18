@@ -12,6 +12,8 @@ No API key is required.
 
 Typical research loop: fetch prices → drop haram sectors → keep names that pass AAOIFI (or DJIM) → purify dividends on the survivors.
 
+For a large universe (S&P 500, a research notebook you re-run), **prepare the AAOIFI metrics DB once**, then pass `cache=True` so later calls never hit SEC EDGAR or Yahoo again.
+
 | You want… | Call | What you get |
 | --- | --- | --- |
 | OHLCV bars for a backtest | `hq.download()` | One row per symbol per trading day |
@@ -19,6 +21,7 @@ Typical research loop: fetch prices → drop haram sectors → keep names that p
 | “Does AAOIFI and DJIM disagree?” | `hq.compare_standards()` | One row per name, both verdicts |
 | Ratio history for a chart or screen | `hq.get_financial_metrics()` | One row per annual filing, or calendar snapshots with `freq=` |
 | How much of a dividend to donate | `hq.purify_dividends()` | One row per ex-date with `purification_amount` |
+| A warm local dataset (S&P 500 / custom) | `hq.prepare_dataset()` | DuckDB + Parquet under `~/.halalquant/` |
 | The purification formula only | `hq.Purifier()` | Scalars / arrays, no network |
 | To plug in your own data vendor | `YFinanceProvider`, `SECEdgarProvider`, `FilingsProvider` | Same DataFrame schemas as the public API |
 
@@ -132,6 +135,8 @@ symbol      as_of report_date filed_date  debt_ratio  cash_ratio  receivables_ra
 
 Read `filed_date` as “this row became usable for a backtest on this date”. FY2024 `impure_ratio` is `NaN` because the interest-income XBRL tag was missing on that 10-K at capture time — purification then has nothing to scale by.
 
+The same frame also carries `ebitda`, `operating_cash_flow`, `capital_expenditure`, and `free_cash_flow` when the filing has them (so you do not need a separate yfinance cash-flow loop).
+
 Pass `freq="ME"` or `freq="QE"` when you want a calendar snapshot (month-end / quarter-end) instead of one row per 10-K. October 2023 still sees FY2022, because Apple’s FY2023 10-K was not filed until 3 November:
 
 ```python
@@ -243,6 +248,85 @@ symbol report_date filed_date
 
 ---
 
+## 8. `prepare_dataset` — warm AAOIFI metrics DB
+
+SEC EDGAR is slow and rate-limited. Yahoo per-ticker loops for income / FCF / EBITDA / dividends add up. Rebuilding the S&P 500 → sector-screened universe on every notebook run wastes the same work. **Prepare once; research locally.**
+
+Install the cache extra:
+
+```bash
+pip install "halalquant[cache]"     # duckdb + pyarrow
+```
+
+### One-time prepare
+
+Default universe is the current S&P 500. Haram sectors are dropped *before* filings are fetched, so you do not spend SEC quota on banks.
+
+```python
+import halalquant as hq
+
+summary = hq.prepare_dataset(
+    universe="sp500",          # or tickers=["AAPL", "MSFT", ...]
+    start="2018-01-01",
+    freq="ME",                 # month-end point-in-time panel (default)
+)
+# summary: one row per symbol — sector, sector_allowed, n_prices, n_metrics, ...
+```
+
+Same job from the terminal:
+
+```bash
+python -m halalquant prepare --universe sp500 --start 2018-01-01
+python -m halalquant prepare --tickers AAPL,MSFT --start 2020-01-01 --freq none
+```
+
+This writes:
+
+| Location | Contents |
+| --- | --- |
+| `~/.halalquant/cache.duckdb` | prices, balance sheets, income (incl. EBITDA / FCF), dividends, sector map, universe members, **AAOIFI financial metrics**, compliance flags |
+| `~/.halalquant/parquet/*.parquet` | mirrors of those tables |
+| `~/.halalquant/sec_facts/*.json.gz` | raw SEC companyfacts (so a retry does not re-download EDGAR) |
+
+Override paths with `HALALQUANT_CACHE`, `HALALQUANT_PARQUET_DIR`, `HALALQUANT_SEC_FACTS_DIR`, or `HALALQUANT_DATA_DIR`.
+
+`freq="ME"` pre-builds the monthly panel that monthly rebalances and performance charts read. Pass `freq=None` (CLI: `--freq none`) for annual 10-K rows only — still cheap to snapshot later from the cached filings.
+
+### Then read the cache in every notebook
+
+Every public fetch function takes `cache=True` (or a `LocalCache` / path). First call fills any holes; later calls are local.
+
+```python
+import halalquant as hq
+
+prices = hq.download("AAPL", start="2018-01-01", end="2024-12-31", cache=True)
+metrics = hq.get_financial_metrics(
+    "AAPL", start="2018-01-01", end="2024-12-31", freq="ME", cache=True,
+)
+universe = hq.get_halal_universe(["AAPL", "MSFT", "JPM"], cache=True)
+purified = hq.purify_dividends("AAPL", start="2024-01-01", end="2024-12-31", cache=True)
+```
+
+Set `HALALQUANT_USE_CACHE=1` to make `cache=True` the default for the process (omit the argument). Leave it unset and the public API stays fetch-only, like yfinance — nothing is written unless you call `prepare_dataset` or pass `cache=True`.
+
+`get_financial_metrics` rows also include `ebitda`, `operating_cash_flow`, `capital_expenditure`, and `free_cash_flow` when the filing has them, so research notebooks do not need raw yfinance cash-flow loops.
+
+Inspect the store directly:
+
+```python
+from halalquant import LocalCache
+
+store = LocalCache()                              # default ~/.halalquant/cache.duckdb
+annual = store.read_metrics(["AAPL"], freq="annual")
+monthly = store.read_metrics(["AAPL"], start="2023-01-01", end="2023-12-31", freq="ME")
+members = store.read_universe("sp500")            # sector + sector_allowed
+print(store.read_meta())
+```
+
+Re-fetch after a 10-K season with `force_refresh=True` (CLI: `--force-refresh`).
+
+---
+
 ## Putting it together
 
 ```python
@@ -258,3 +342,5 @@ zakat_cash = hq.purify_dividends(halal["symbol"], start="2024-01-01", end="2024-
 ```
 
 Feed `prices` and `halal["symbol"]` into your own backtester. Keep `zakat_cash["purification_amount"]` next to dividend income so the strategy’s P&L is net of purification.
+
+For a repeated research notebook, insert `hq.prepare_dataset(...)` once (or `python -m halalquant prepare`) and add `cache=True` to every call above.

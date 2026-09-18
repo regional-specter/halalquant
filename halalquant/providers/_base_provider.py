@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Mapping, Optional, Sequence
 
@@ -19,10 +20,13 @@ class AbstractFetcher(BaseDataProvider, ABC):
         api_key: Optional[str] = None,
         session: Optional[requests.Session] = None,
         timeout: float = 30.0,
+        min_interval: float = 0.0,
     ) -> None:
         self.api_key = api_key
         self.session = session or requests.Session()
         self.timeout = timeout
+        self.min_interval = float(min_interval or 0.0)
+        self._last_request = 0.0
 
     def _get_json(
         self,
@@ -30,14 +34,25 @@ class AbstractFetcher(BaseDataProvider, ABC):
         params: Optional[Mapping[str, Any]] = None,
         headers: Optional[Mapping[str, str]] = None,
     ) -> Any:
+        self._throttle()
         response = self.session.get(
             url,
             params=dict(params or {}),
             headers=dict(headers or {}),
             timeout=self.timeout,
         )
+        self._last_request = time.monotonic()
         response.raise_for_status()
         return response.json()
+
+    def _throttle(self) -> None:
+        if self.min_interval <= 0:
+            return
+        elapsed = time.monotonic() - self._last_request
+        remaining = self.min_interval - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
+
 
     @abstractmethod
     def get_prices(

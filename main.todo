@@ -26,8 +26,13 @@
 ## 4. Local storage
 [x] Design the DuckDB tables for prices, balance sheets, and compliance flags.
 [x] Write the DuckDB driver for read and write.
-[x] Public API stays fetch-only (no local DB), like yfinance.
+[x] Public API stays fetch-only by default (no local DB), like yfinance.
 [x] Add point-in-time (PIT) restatement logic so you do not look ahead.
+[x] Wire an optional DuckDB + Parquet cache into the public API (`cache=True`).
+[x] Add prepare_dataset() to build a warm AAOIFI metrics database.
+[x] Cache S&P 500 constituents, sector screen, prices, filings, dividends, and ratios.
+[x] Cache raw SEC companyfacts on disk so a retry does not re-download EDGAR.
+[x] Store EBITDA / FCF next to AAOIFI ratios so notebooks do not loop yfinance.
 
 ## 5. Sector and business filters
 [x] Build the sector exclusion list (haram activities).
@@ -76,6 +81,6 @@
 
 ## 12. After 0.1.0
 [x] Add non-US filing sources (SEC covers US issuers only).
-[x] Skip wiring the optional local cache into the public API.
+[x] Wire the optional local cache into the public API (`cache=True` / prepare_dataset).
 [x] Map bank and insurer XBRL tags so financial ratios are not empty without a sector filter.
 [x] Tighten purification so dividends use the latest income statement known on the ex-date.

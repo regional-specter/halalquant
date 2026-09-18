@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import gzip
+import json
 import os
-from collections import defaultdict
-from typing import Any, Optional, Sequence
+from collections import OrderedDict, defaultdict
+from pathlib import Path
+from typing import Any, Optional, Sequence, Union
 
 import pandas as pd
 import requests
@@ -87,12 +90,33 @@ INCOME_TAGS: dict[str, tuple[str, ...]] = {
         "InterestAndDividendIncome",
         "InterestAndFeeIncomeLoansAndLeases",
     ),
+    "ebitda": ("EBITDA",),
+    "operating_income": ("OperatingIncomeLoss",),
+    "depreciation": (
+        "DepreciationDepletionAndAmortization",
+        "DepreciationAndAmortization",
+        "DepreciationAmortizationAndAccretionNet",
+    ),
+    "operating_cash_flow": (
+        "NetCashProvidedByUsedInOperatingActivities",
+        "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+    ),
+    "capital_expenditure": (
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsToAcquireProductiveAssets",
+    ),
 }
 
 ANNUAL_FORMS = {"10-K", "10-K/A"}
 DEFAULT_SEC_USER_AGENT = (
     "HalalQuant/0.1.0 (halalquant-research@example.com; override with HALALQUANT_SEC_UA)"
 )
+
+# SEC company_tickers.json can point a listed ticker at a new holding-company
+# CIK that has almost no XBRL. Prefer the operating-company 10-K instead.
+CIK_OVERRIDES: dict[str, int] = {
+    "XOM": 34088,  # Exxon Mobil Corporation
+}
 
 
 class SECEdgarProvider(AbstractFetcher):
@@ -105,7 +129,15 @@ class SECEdgarProvider(AbstractFetcher):
 
     BASE_URL = "https://data.sec.gov"
 
-    def __init__(self, user_agent: Optional[str] = None, **kwargs) -> None:
+    def __init__(
+        self,
+        user_agent: Optional[str] = None,
+        facts_dir: Optional[Union[str, Path, bool]] = None,
+        refresh_facts: bool = False,
+        min_interval: float = 0.12,
+        **kwargs,
+    ) -> None:
+        kwargs.setdefault("min_interval", min_interval)
         super().__init__(**kwargs)
         ua = user_agent or os.getenv("HALALQUANT_SEC_UA") or DEFAULT_SEC_USER_AGENT
         self.session.headers.update(
@@ -115,7 +147,17 @@ class SECEdgarProvider(AbstractFetcher):
             }
         )
         self._tickers: Optional[dict[str, int]] = None
-        self._facts_cache: dict[str, Optional[dict[str, Any]]] = {}
+        self._facts_cache: OrderedDict[str, Optional[dict[str, Any]]] = OrderedDict()
+        self._facts_cache_limit = 32
+        self.refresh_facts = refresh_facts
+        if facts_dir is False:
+            self.facts_dir: Optional[Path] = None
+        elif facts_dir is None:
+            from halalquant.database._cache import default_facts_dir
+
+            self.facts_dir = default_facts_dir()
+        else:
+            self.facts_dir = Path(facts_dir)
 
     def get_prices(
         self,
@@ -185,6 +227,7 @@ class SECEdgarProvider(AbstractFetcher):
                     cik = row.get("cik_str")
                     if ticker and cik is not None:
                         mapping[ticker] = int(cik)
+            mapping.update(CIK_OVERRIDES)
             self._tickers = mapping
         return self._tickers
 
@@ -197,21 +240,62 @@ class SECEdgarProvider(AbstractFetcher):
 
     def _companyfacts(self, symbol: str) -> Optional[dict[str, Any]]:
         key = symbol.upper()
-        if key in self._facts_cache:
+        if not self.refresh_facts and key in self._facts_cache:
+            self._facts_cache.move_to_end(key)
             return self._facts_cache[key]
+        if not self.refresh_facts:
+            disk = self._read_facts_disk(key)
+            if disk is not None:
+                self._remember_facts(key, disk)
+                return disk
         cik = self._ticker_map().get(key)
         if cik is None:
-            self._facts_cache[key] = None
+            self._remember_facts(key, None)
             return None
         url = COMPANYFACTS_URL.format(cik=f"{cik:010d}")
         try:
             payload = self._get_json(url)
         except requests.HTTPError:
-            self._facts_cache[key] = None
+            self._remember_facts(key, None)
             return None
         facts = payload if isinstance(payload, dict) else None
-        self._facts_cache[key] = facts
+        if facts:
+            self._write_facts_disk(key, facts)
+        self._remember_facts(key, facts)
         return facts
+
+    def _remember_facts(self, key: str, facts: Optional[dict[str, Any]]) -> None:
+        self._facts_cache[key] = facts
+        self._facts_cache.move_to_end(key)
+        while len(self._facts_cache) > self._facts_cache_limit:
+            self._facts_cache.popitem(last=False)
+
+    def _facts_path(self, key: str) -> Optional[Path]:
+        if self.facts_dir is None:
+            return None
+        return self.facts_dir / f"{key}.json.gz"
+
+    def _read_facts_disk(self, key: str) -> Optional[dict[str, Any]]:
+        path = self._facts_path(key)
+        if path is None or not path.exists():
+            return None
+        try:
+            with gzip.open(path, "rt", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _write_facts_disk(self, key: str, facts: dict[str, Any]) -> None:
+        path = self._facts_path(key)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with gzip.open(path, "wt", encoding="utf-8") as handle:
+                json.dump(facts, handle)
+        except OSError:
+            return
 
     def _facts_to_balance_sheet(
         self,
@@ -288,7 +372,21 @@ class SECEdgarProvider(AbstractFetcher):
         for (end, filed), vals in sorted(merged.items()):
             revenue = vals.get("total_revenue")
             interest = vals.get("interest_income")
-            if revenue is None and interest is None:
+            ocf = vals.get("operating_cash_flow")
+            capex = vals.get("capital_expenditure")
+            ebitda = vals.get("ebitda")
+            operating_income = vals.get("operating_income")
+            depreciation = vals.get("depreciation")
+            if ebitda is None and operating_income is not None and depreciation is not None:
+                ebitda = float(operating_income) + abs(float(depreciation))
+            fcf = _free_cash_flow(ocf, capex)
+            if (
+                revenue is None
+                and interest is None
+                and ebitda is None
+                and ocf is None
+                and capex is None
+            ):
                 continue
             rows.append(
                 {
@@ -298,6 +396,10 @@ class SECEdgarProvider(AbstractFetcher):
                     "total_revenue": revenue,
                     "interest_income": interest,
                     "non_compliant_income": interest,
+                    "ebitda": ebitda,
+                    "operating_cash_flow": ocf,
+                    "capital_expenditure": capex,
+                    "free_cash_flow": fcf,
                 }
             )
         frame = pd.DataFrame(rows)
@@ -359,3 +461,11 @@ def _iter_annual_points(
             except (TypeError, ValueError):
                 continue
     return rows
+
+
+def _free_cash_flow(ocf: Optional[float], capex: Optional[float]) -> Optional[float]:
+    if ocf is None or capex is None:
+        return None
+    capex_f = float(capex)
+    ocf_f = float(ocf)
+    return ocf_f + capex_f if capex_f < 0 else ocf_f - abs(capex_f)

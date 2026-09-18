@@ -2,20 +2,28 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from typing import Optional, Sequence, Union
 
 import pandas as pd
 
 from halalquant.base import METRIC_COLUMNS, BaseDataProvider, BaseScreener
+from halalquant.database._cache import CacheBackedProvider, CacheLike, LocalCache, resolve_cache
+from halalquant.database._dataset import prepare_dataset
 from halalquant.providers._filings import FilingsProvider
 from halalquant.providers._yfinance import YFinanceProvider
 from halalquant.purification._purifier import Purifier
-from halalquant.screening._aaoifi import AAOIFIScreener, compute_ratios
+from halalquant.screening._aaoifi import AAOIFIScreener
 from halalquant.screening._compare import compare_screeners
 from halalquant.screening._djim import DJIMScreener
 from halalquant.screening._sector_filter import SectorFilter
-from halalquant.utils._pit_adjustments import as_of_filter, known_filings
+from halalquant.utils._metrics import (
+    build_financial_metrics,
+    fill_market_caps_from_prices,
+    normalize_freq,
+    price_window_for_fundamentals,
+)
+from halalquant.utils._pit_adjustments import as_of_filter
 from halalquant.utils.validation import validate_date_range, validate_symbols
 
 DateLikeInput = Union[str, date]
@@ -26,17 +34,18 @@ def download(
     start: Optional[DateLikeInput] = None,
     end: Optional[DateLikeInput] = None,
     provider: Optional[BaseDataProvider] = None,
+    cache: CacheLike = None,
 ) -> pd.DataFrame:
     """
     Fetch OHLCV history for one or more tickers via yfinance.
 
-    Returns a long DataFrame with normalized column names. Nothing is written
-    to disk and no vendor API key is required.
+    Pass ``cache=True`` (or set ``HALALQUANT_USE_CACHE=1``) to read/write the
+    local DuckDB store. Nothing is written to disk by default.
     """
     symbols = validate_symbols(tickers)
     start_date, end_date = validate_date_range(start, end)
-    client = provider or YFinanceProvider()
-    return client.get_prices(symbols, start=start_date, end=end_date)
+    market, _, _ = _clients(provider, None, cache)
+    return market.get_prices(symbols, start=start_date, end=end_date)
 
 
 def get_halal_universe(
@@ -46,6 +55,7 @@ def get_halal_universe(
     provider: Optional[BaseDataProvider] = None,
     filings: Optional[BaseDataProvider] = None,
     apply_sector_filter: bool = True,
+    cache: CacheLike = None,
 ) -> pd.DataFrame:
     """
     Fetch fundamentals and return compliant tickers plus screening metrics.
@@ -59,6 +69,7 @@ def get_halal_universe(
         provider=provider,
         filings=filings,
         apply_sector_filter=apply_sector_filter,
+        cache=cache,
     )
     return _screener_for(standard).evaluate_compliance(fundamentals)
 
@@ -69,6 +80,7 @@ def compare_standards(
     provider: Optional[BaseDataProvider] = None,
     filings: Optional[BaseDataProvider] = None,
     apply_sector_filter: bool = True,
+    cache: CacheLike = None,
 ) -> pd.DataFrame:
     """
     Screen the same tickers under AAOIFI and DJIM and join the verdicts.
@@ -82,6 +94,7 @@ def compare_standards(
         provider=provider,
         filings=filings,
         apply_sector_filter=apply_sector_filter,
+        cache=cache,
     )
     return compare_screeners(fundamentals)
 
@@ -93,6 +106,7 @@ def get_financial_metrics(
     provider: Optional[BaseDataProvider] = None,
     filings: Optional[BaseDataProvider] = None,
     freq: Optional[str] = None,
+    cache: CacheLike = None,
 ) -> pd.DataFrame:
     """
     Return screening ratios and income metrics over a date range.
@@ -101,70 +115,45 @@ def get_financial_metrics(
     ``[start, end]`` (only filings already public by ``end``). Pass
     ``freq`` (for example ``"ME"`` or ``"QE"``) to emit calendar
     point-in-time snapshots instead.
+
+    After ``prepare_dataset()``, pass ``cache=True`` to build the panel
+    from the local AAOIFI metrics DB instead of SEC EDGAR / Yahoo.
     """
     symbols = validate_symbols(tickers)
     start_date, end_date = validate_date_range(start, end)
-    market = provider or YFinanceProvider()
-    statements = filings or FilingsProvider()
-
+    market, statements, store = _clients(provider, filings, cache)
+    freq_key = normalize_freq(freq) if freq else "annual"
     empty = pd.DataFrame(columns=list(METRIC_COLUMNS))
-    fundamentals = statements.get_balance_sheet(symbols, as_of=None)
+
+    if store is not None:
+        cached = store.read_metrics(symbols, start=start_date, end=end_date, freq=freq_key)
+        missing = _missing_metric_symbols(cached, symbols, start_date, end_date, freq_key)
+        if not missing:
+            return _metrics_view(cached)
+    else:
+        cached = empty
+        missing = list(symbols)
+
+    fundamentals = statements.get_balance_sheet(missing, as_of=None)
     if fundamentals.empty:
-        return empty
+        return _metrics_view(cached) if store is not None else empty
 
     prices = _prices_for_fundamentals(market, fundamentals, as_of=end_date)
-    income = statements.get_income_statement(symbols, as_of=None)
-
-    if freq:
-        pandas_freq = _normalize_freq(freq)
-        stamps = pd.date_range(start=start_date, end=end_date, freq=pandas_freq)
-        snapshots: list[pd.DataFrame] = []
-        for stamp in stamps:
-            snap = as_of_filter(fundamentals, as_of=stamp)
-            if snap.empty:
-                continue
-            snap = _fill_market_caps_from_prices(
-                market,
-                snap,
-                as_of=stamp.date(),
-                prices=prices,
-                price_as_of=stamp.date(),
-            )
-            snap["as_of"] = stamp.date()
-            snapshots.append(snap)
-        if not snapshots:
-            return empty
-        panel = pd.concat(snapshots, ignore_index=True)
-    else:
-        fundamentals = known_filings(fundamentals, as_of=str(end_date)[:10])
-        if fundamentals.empty:
-            return empty
-        if not income.empty:
-            income = known_filings(income, as_of=str(end_date)[:10])
-        report_ts = pd.to_datetime(fundamentals["report_date"], errors="coerce")
-        start_ts = pd.Timestamp(start_date)
-        end_ts = pd.Timestamp(end_date)
-        panel = fundamentals[(report_ts >= start_ts) & (report_ts <= end_ts)].copy()
-        if panel.empty:
-            return empty
-        panel = _fill_market_caps_from_prices(
-            market,
-            panel,
-            as_of=end_date,
-            prices=prices,
-        )
-        panel["as_of"] = pd.to_datetime(panel["filed_date"], errors="coerce").dt.date
-
-    ratios = compute_ratios(panel)
-    panel["debt_ratio"] = ratios["debt_ratio"].values
-    panel["cash_ratio"] = ratios["cash_ratio"].values
-    panel["receivables_ratio"] = ratios["receivables_ratio"].values
-    panel = _join_income_metrics(panel, income)
-
-    for col in METRIC_COLUMNS:
-        if col not in panel.columns:
-            panel[col] = pd.NA
-    return panel[list(METRIC_COLUMNS)].reset_index(drop=True)
+    income = statements.get_income_statement(missing, as_of=None)
+    panel = build_financial_metrics(
+        fundamentals,
+        income,
+        prices,
+        start=start_date,
+        end=end_date,
+        freq=freq,
+    )
+    if store is not None:
+        if not panel.empty:
+            store.write_metrics(panel, freq=freq_key)
+        combined = store.read_metrics(symbols, start=start_date, end=end_date, freq=freq_key)
+        return _metrics_view(combined)
+    return panel.reset_index(drop=True)
 
 
 def purify_dividends(
@@ -173,6 +162,7 @@ def purify_dividends(
     end: Optional[DateLikeInput] = None,
     provider: Optional[BaseDataProvider] = None,
     filings: Optional[BaseDataProvider] = None,
+    cache: CacheLike = None,
 ) -> pd.DataFrame:
     """
     Fetch dividends from yfinance and income from filings, then purify.
@@ -183,8 +173,7 @@ def purify_dividends(
     """
     symbols = validate_symbols(tickers)
     start_date, end_date = validate_date_range(start, end)
-    market = provider or YFinanceProvider()
-    statements = filings or FilingsProvider()
+    market, statements, _ = _clients(provider, filings, cache)
 
     if hasattr(market, "get_dividends"):
         dividends = market.get_dividends(symbols, start=start_date, end=end_date)
@@ -231,16 +220,30 @@ def _screener_for(standard: str) -> BaseScreener:
     raise ValueError(f"Unknown screening standard {standard!r}. Use 'aaoifi' or 'djim'.")
 
 
+def _clients(
+    provider: Optional[BaseDataProvider],
+    filings: Optional[BaseDataProvider],
+    cache: CacheLike,
+) -> tuple[BaseDataProvider, BaseDataProvider, Optional[LocalCache]]:
+    market = provider or YFinanceProvider()
+    statements = filings or FilingsProvider()
+    store = resolve_cache(cache, provider=market, filings=statements)
+    if store is None:
+        return market, statements, None
+    wrapped = CacheBackedProvider(store)
+    return wrapped, wrapped, store
+
+
 def _prepare_universe_fundamentals(
     tickers: Union[str, Sequence[str]],
     as_of: Optional[DateLikeInput] = None,
     provider: Optional[BaseDataProvider] = None,
     filings: Optional[BaseDataProvider] = None,
     apply_sector_filter: bool = True,
+    cache: CacheLike = None,
 ) -> pd.DataFrame:
     symbols = validate_symbols(tickers)
-    market = provider or YFinanceProvider()
-    statements = filings or FilingsProvider()
+    market, statements, _ = _clients(provider, filings, cache)
 
     if apply_sector_filter:
         sector_map: dict[str, str] = {}
@@ -263,13 +266,39 @@ def _prepare_universe_fundamentals(
     return _fill_market_caps_from_prices(market, fundamentals, as_of=cutoff)
 
 
-def _normalize_freq(freq: str) -> str:
-    aliases = {"M": "ME", "Q": "QE", "Y": "YE", "A": "YE"}
-    return aliases.get(str(freq).upper(), freq)
+def _metrics_view(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame(columns=list(METRIC_COLUMNS))
+    out = frame.copy()
+    for col in METRIC_COLUMNS:
+        if col not in out.columns:
+            out[col] = pd.NA
+    return out[list(METRIC_COLUMNS)].reset_index(drop=True)
 
 
-def _lookback() -> timedelta:
-    return timedelta(days=int(24 * 30.44) + 14)
+def _missing_metric_symbols(
+    cached: pd.DataFrame,
+    symbols: Sequence[str],
+    start: date,
+    end: date,
+    freq: str,
+) -> list[str]:
+    if cached is None or cached.empty:
+        return list(symbols)
+    have: set[str] = set()
+    slack = pd.Timedelta(days=7)
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end)
+    for symbol, frame in cached.groupby("symbol"):
+        if freq == "annual":
+            have.add(str(symbol))
+            continue
+        stamps = pd.to_datetime(frame["as_of"], errors="coerce")
+        if stamps.empty or stamps.isna().all():
+            continue
+        if stamps.min() <= start_ts + slack and stamps.max() >= end_ts - slack:
+            have.add(str(symbol))
+    return [s for s in symbols if s not in have]
 
 
 def _prices_for_fundamentals(
@@ -280,58 +309,11 @@ def _prices_for_fundamentals(
     symbols = list(fundamentals["symbol"].unique()) if "symbol" in fundamentals.columns else []
     if not symbols:
         return pd.DataFrame()
-    end = pd.Timestamp(str(as_of)[:10]).date()
-    start = end - _lookback()
-    if "report_date" in fundamentals.columns:
-        report_dates = pd.to_datetime(fundamentals["report_date"], errors="coerce")
-        if report_dates.notna().any():
-            start = min(start, report_dates.min().date() - _lookback())
-            end = max(end, report_dates.max().date())
+    start, end = price_window_for_fundamentals(fundamentals, as_of=as_of)
     try:
         return client.get_prices(symbols, start=start, end=end)
     except (ValueError, NotImplementedError):
         return pd.DataFrame()
-
-
-def _join_income_metrics(panel: pd.DataFrame, income: pd.DataFrame) -> pd.DataFrame:
-    out = panel.copy()
-    out["total_revenue"] = pd.NA
-    out["non_compliant_income"] = pd.NA
-    out["impure_ratio"] = pd.NA
-    if income.empty or "report_date" not in out.columns:
-        return out
-
-    income = income.copy()
-    income["_report"] = pd.to_datetime(income["report_date"], errors="coerce")
-    income["_filed"] = pd.to_datetime(income["filed_date"], errors="coerce")
-    purifier = Purifier()
-    revenues: list = []
-    impure_income: list = []
-    for _, row in out.iterrows():
-        as_of_ts = pd.Timestamp(row.get("as_of") or row.get("filed_date"))
-        report_ts = pd.to_datetime(row.get("report_date"), errors="coerce")
-        known = income[
-            (income["symbol"] == row["symbol"]) & (income["_filed"] <= as_of_ts)
-        ]
-        if known.empty:
-            revenues.append(pd.NA)
-            impure_income.append(pd.NA)
-            continue
-        if pd.notna(report_ts):
-            same_period = known[known["_report"] == report_ts]
-            pick = same_period if not same_period.empty else known
-        else:
-            pick = known
-        latest = pick.sort_values(["_report", "_filed"]).iloc[-1]
-        revenues.append(latest.get("total_revenue"))
-        impure_income.append(latest.get("non_compliant_income"))
-    out["total_revenue"] = revenues
-    out["non_compliant_income"] = impure_income
-    out["impure_ratio"] = purifier.impure_income_ratio(
-        pd.to_numeric(out["non_compliant_income"], errors="coerce"),
-        pd.to_numeric(out["total_revenue"], errors="coerce"),
-    )
-    return out
 
 
 def _match_income_to_dividends(
@@ -351,18 +333,19 @@ def _match_income_to_dividends(
 
     income = income.copy()
     income["_filed"] = pd.to_datetime(income["filed_date"], errors="coerce")
+    grouped = {symbol: frame for symbol, frame in income.groupby("symbol")}
     rows: list[dict] = []
     for _, div in out.iterrows():
         payload = div.to_dict()
         ex_ts = pd.Timestamp(div["ex_date"])
-        known = income[
-            (income["symbol"] == div["symbol"]) & (income["_filed"] <= ex_ts)
-        ]
-        if not known.empty:
-            latest = known.sort_values(["report_date", "_filed"]).iloc[-1]
-            payload["total_revenue"] = latest["total_revenue"]
-            payload["non_compliant_income"] = latest["non_compliant_income"]
-            payload["report_date"] = latest["report_date"]
+        known = grouped.get(div["symbol"])
+        if known is not None:
+            known = known[known["_filed"] <= ex_ts]
+            if not known.empty:
+                latest = known.sort_values(["report_date", "_filed"]).iloc[-1]
+                payload["total_revenue"] = latest["total_revenue"]
+                payload["non_compliant_income"] = latest["non_compliant_income"]
+                payload["report_date"] = latest["report_date"]
         rows.append(payload)
     return pd.DataFrame(rows)
 
@@ -375,55 +358,11 @@ def _fill_market_caps_from_prices(
     price_as_of: Optional[DateLikeInput] = None,
 ) -> pd.DataFrame:
     """Fill missing market cap using shares outstanding × trailing prices."""
-    out = fundamentals.copy()
-    needs_cap = out["market_cap"].isna() if "market_cap" in out.columns else pd.Series(True, index=out.index)
-    needs_24 = (
-        out["market_cap_24m"].isna() if "market_cap_24m" in out.columns else pd.Series(True, index=out.index)
-    )
-    if not (needs_cap | needs_24).any():
-        return out
-    if "shares_outstanding" not in out.columns or out["shares_outstanding"].isna().all():
-        return out
-
     if prices is None:
-        prices = _prices_for_fundamentals(client, out, as_of=as_of)
-    if prices is None or prices.empty:
-        return out
-
-    prices = prices.copy()
-    prices["date"] = pd.to_datetime(prices["date"])
-    window = pd.Timedelta(days=int(24 * 30.44))
-
-    market_caps: list[Optional[float]] = []
-    market_caps_24m: list[Optional[float]] = []
-    for _, row in out.iterrows():
-        shares = row.get("shares_outstanding")
-        existing_spot = row.get("market_cap")
-        existing_avg = row.get("market_cap_24m")
-        if pd.isna(shares) or float(shares) <= 0:
-            market_caps.append(existing_spot if not pd.isna(existing_spot) else None)
-            market_caps_24m.append(existing_avg if not pd.isna(existing_avg) else None)
-            continue
-        shares_f = float(shares)
-        if price_as_of is not None:
-            end_ts = pd.Timestamp(str(price_as_of)[:10])
-        else:
-            report = row.get("report_date") or as_of
-            end_ts = pd.Timestamp(report)
-        sym_prices = prices[prices["symbol"] == row["symbol"]]
-        known = sym_prices[sym_prices["date"] <= end_ts]
-        if known.empty:
-            market_caps.append(existing_spot if not pd.isna(existing_spot) else None)
-            market_caps_24m.append(existing_avg if not pd.isna(existing_avg) else None)
-            continue
-        close = pd.to_numeric(known["close"], errors="coerce")
-        spot = float(close.iloc[-1]) * shares_f
-        trail = known[known["date"] >= (end_ts - window)]
-        trail_close = pd.to_numeric(trail["close"], errors="coerce")
-        avg = float(trail_close.mean()) * shares_f if not trail_close.empty else spot
-        market_caps.append(existing_spot if not pd.isna(existing_spot) else spot)
-        market_caps_24m.append(existing_avg if not pd.isna(existing_avg) else avg)
-
-    out["market_cap"] = market_caps
-    out["market_cap_24m"] = market_caps_24m
-    return out
+        prices = _prices_for_fundamentals(client, fundamentals, as_of=as_of)
+    return fill_market_caps_from_prices(
+        fundamentals,
+        prices,
+        as_of=as_of,
+        price_as_of=price_as_of,
+    )

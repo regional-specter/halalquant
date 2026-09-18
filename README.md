@@ -29,6 +29,10 @@ The library is the **ingestion + compliance layer**: fetch prices, screen a univ
 [ SEC EDGAR ]  US (and ADR) balance sheets & income (point-in-time filings)
         │
         ▼
+[ Local cache — optional ]  DuckDB + Parquet  (~/.halalquant/)
+  hq.prepare_dataset() warms prices, filings, AAOIFI metrics, S&P 500 universe
+        │
+        ▼
 [ Shariah Screening Engine ]  AAOIFI / DJIM + sector filters
         │
         ▼
@@ -37,7 +41,7 @@ The library is the **ingestion + compliance layer**: fetch prices, screen a univ
         ▼
 [ Unified Strategy API ]
   hq.download()  ·  hq.get_halal_universe()  ·  hq.purify_dividends()
-  hq.compare_standards()  ·  hq.get_financial_metrics()
+  hq.compare_standards()  ·  hq.get_financial_metrics()  ·  hq.prepare_dataset()
 ```
 
 ---
@@ -56,7 +60,8 @@ The library is the **ingestion + compliance layer**: fetch prices, screen a univ
 * [Step 3: Sector Filters & Alternate Standards](#step-3-sector-filters--alternate-standards)
 * [Step 4: Purification Engine](#step-4-purification-engine)
 * [Step 5: Point-In-Time Data](#step-5-point-in-time-data)
-* [Step 6: Verification & Testing](#step-6-verification--testing)
+* [Step 6: Local AAOIFI metrics DB](#step-6-local-aaoifi-metrics-db)
+* [Step 7: Verification & Testing](#step-7-verification--testing)
 * [Progress](#progress)
 * [What's Next](#whats-next)
 
@@ -99,7 +104,7 @@ cd halalquant
 pip install -e ".[dev,examples]"
 ```
 
-Optional extras: `[examples]` (Rich terminal demo), `[cache]` (DuckDB + Parquet local store), `[dev]` (pytest).
+Optional extras: `[examples]` (Rich terminal demo), `[cache]` (DuckDB + Parquet local store — required for `prepare_dataset`), `[dev]` (pytest).
 
 Prices and dividends come from yfinance. US (and ADR) fundamentals come from the public SEC EDGAR companyfacts API; other issuers use Yahoo annual statements.
 
@@ -111,6 +116,8 @@ universe = hq.get_halal_universe(["AAPL", "MSFT"], standard="aaoifi")
 purified = hq.purify_dividends("AAPL", start="2024-01-01", end="2024-12-31")
 comparison = hq.compare_standards(["AAPL", "MSFT"])
 metrics = hq.get_financial_metrics("AAPL", start="2020-01-01", end="2024-12-31")
+# hq.prepare_dataset(universe="sp500", start="2018-01-01")  # once
+# metrics = hq.get_financial_metrics("AAPL", start="2018-01-01", cache=True)
 ```
 
 What each call is for, with captured DataFrames, is in **[USAGE.md](USAGE.md)**. Re-generate the snapshots with `python examples/walkthrough.py`.
@@ -123,6 +130,7 @@ What each call is for, with captured DataFrames, is in **[USAGE.md](USAGE.md)**.
 pip install "halalquant[examples]"
 python -m halalquant                        # terminal tables
 python -m halalquant --svg                  # rewrite docs/showcase.svg
+python -m halalquant prepare --help         # warm the local AAOIFI metrics DB
 ```
 
 The demo screens a mixed universe (a bank is excluded before ratios run) and shows how much of each AAPL dividend to donate. From a clone you can also run `python examples/showcase.py`.
@@ -164,6 +172,7 @@ symbol      as_of  is_compliant  debt_ratio  cash_ratio  receivables_ratio stand
 | `compare_standards()` | Both verdicts on the same tickers (failures stay in the table) |
 | `get_financial_metrics()` | Ratio history, or month/quarter snapshots with `freq="ME"` / `"QE"` |
 | `purify_dividends()` | The share of each dividend to donate |
+| `prepare_dataset()` | Warm DuckDB + Parquet cache (S&P 500 or explicit tickers) |
 
 ---
 
@@ -173,10 +182,12 @@ symbol      as_of  is_compliant  debt_ratio  cash_ratio  receivables_ratio stand
 halalquant/
 ├── halalquant/                       # Core library package
 │   ├── __init__.py                  # Exposes top-level data loaders
-│   ├── __main__.py                  # python -m halalquant → Rich demo
+│   ├── __main__.py                  # python -m halalquant → Rich demo; `prepare` → local DB
+│   ├── cli.py                       # `python -m halalquant prepare` argument parser
 │   ├── showcase.py                  # Rich terminal demo (README screenshot)
 │   ├── api.py                       # download(), get_halal_universe(), purify_dividends(),
-│   │                                # compare_standards(), get_financial_metrics()
+│   │                                # compare_standards(), get_financial_metrics(),
+│   │                                # prepare_dataset()
 │   ├── base.py                      # BaseDataProvider and BaseScreener interfaces
 │   ├── providers/                   # Data adaptors
 │   │   ├── _base_provider.py        # HTTP helper used by SEC
@@ -193,9 +204,12 @@ halalquant/
 │   │   └── _purifier.py             # Impure income ratio calculators
 │   ├── database/                    # Optional local store: pip install "halalquant[cache]"
 │   │   ├── _cache.py                # Cache-before-fetch + Parquet mirrors
+│   │   ├── _dataset.py              # prepare_dataset() — warm AAOIFI metrics DB
+│   │   ├── _universe.py             # S&P 500 constituent list
 │   │   ├── _duckdb_driver.py        # Vectorized local SQL query engine
-│   │   └── _models.py               # Database schemas (prices, balance sheets, flags)
+│   │   └── _models.py               # Database schemas (prices, statements, metrics)
 │   └── utils/                       # Shared helpers
+│       ├── _metrics.py              # Ratio panel builder (annual + calendar snapshots)
 │       ├── _pit_adjustments.py      # Point-In-Time restatement logic (no look-ahead bias)
 │       └── validation.py            # Symbol and date range validators
 ├── examples/
@@ -209,7 +223,8 @@ halalquant/
 │   ├── test_djim_screening.py       # DJIM 33% thresholds + AAOIFI comparison math
 │   ├── test_purification.py         # Purification formula
 │   ├── test_pit_data.py             # Look-ahead bias prevention helpers
-│   └── test_sec_edgar.py            # Live SEC companyfacts mapping
+│   ├── test_sec_edgar.py            # Live SEC companyfacts mapping
+│   └── test_cache.py                # Prepared AAOIFI metrics DB (offline fake provider)
 ├── USAGE.md                         # Function-by-function guide with captured output
 ├── main.todo
 ├── pyproject.toml
@@ -226,7 +241,7 @@ Every data provider in `halalquant` adheres to a strict Object-Oriented interfac
 Data Request (Symbol, Date Range)
         │
         ▼
-.download() / .get_halal_universe() / .purify_dividends()
+.prepare_dataset() / .download() / .get_halal_universe() / .purify_dividends()
 .compare_standards() / .get_financial_metrics()
         │
         ▼
@@ -415,7 +430,7 @@ Interest income is used as a conservative proxy for non-compliant income when a 
 
 ## Step 5: Point-In-Time Data
 
-`download()`, `get_halal_universe()`, `compare_standards()`, `get_financial_metrics()`, and `purify_dividends()` fetch on demand and return pandas DataFrames. Nothing is written to a local database.
+By default `download()`, `get_halal_universe()`, `compare_standards()`, `get_financial_metrics()`, and `purify_dividends()` fetch on demand and return pandas DataFrames. Nothing is written to a local database unless you pass `cache=True` or call `prepare_dataset()`.
 
 Point-in-time helpers ensure you never use a filing that was not yet public on the decision date. SEC `filed_date` is the as-of cutoff. Yahoo statements have no filing date, so non-US rows use `report_date + 90 days`.
 
@@ -434,7 +449,31 @@ This is the difference between a toy screener and a backtest-safe compliance eng
 
 ---
 
-## Step 6: Verification & Testing
+## Step 6: Local AAOIFI metrics DB
+
+A full notebook run is expensive: SEC companyfacts is rate-limited, Yahoo is a per-ticker loop for income / FCF / dividends, and the S&P 500 → sector screen is rebuilt every time. `prepare_dataset()` does that work **once** and writes DuckDB + Parquet under `~/.halalquant/`. Monthly rebalances then read the prepared panel.
+
+```bash
+pip install "halalquant[cache]"
+python -m halalquant prepare --universe sp500 --start 2018-01-01
+```
+
+```python
+import halalquant as hq
+
+hq.prepare_dataset(universe="sp500", start="2018-01-01", freq="ME")
+
+prices = hq.download(["AAPL", "MSFT"], start="2018-01-01", cache=True)
+monthly = hq.get_financial_metrics(
+    "AAPL", start="2018-01-01", end="2024-12-31", freq="ME", cache=True,
+)
+```
+
+`cache=True` on any public fetch function is cache-before-fetch: hits DuckDB first, fills missing symbols from the network, and writes back. Set `HALALQUANT_USE_CACHE=1` to make that the default. Function-level detail, table list, and env vars are in **[USAGE.md §8](USAGE.md#8-prepare_dataset--warm-aaoifi-metrics-db)**.
+
+---
+
+## Step 7: Verification & Testing
 
 We use `pytest` against the real public API: yfinance prices, SEC EDGAR filings, and Yahoo annual statements for non-US tickers. Screening-threshold math is checked with small numeric examples so 30% vs 33% cannot drift.
 
@@ -455,6 +494,7 @@ Current coverage includes:
 | `test_djim_screening.py` | DJIM 33% thresholds and AAOIFI vs DJIM disagreement |
 | `test_purification.py` | Impure ratio and purification amount |
 | `test_pit_data.py` | No look-ahead on filings or prices |
+| `test_cache.py` | `prepare_dataset` + cache-backed `download` / metrics / purification (no network) |
 
 ### Example Test Case (`tests/test_aaoifi_screening.py`)
 
@@ -489,6 +529,7 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] `purify_dividends()`
 - [x] `compare_standards()`
 - [x] `get_financial_metrics()`
+- [x] `prepare_dataset()` (local AAOIFI metrics DB)
 
 ### Providers
 
@@ -518,6 +559,10 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] Point-in-time price cutoff
 - [x] Bank / insurer us-gaap tags (deposits, loans, cash due from banks)
 - [x] Original 10-K filed date kept when later 10-Ks restate comparatives
+- [x] DuckDB + Parquet cache wired into the public API (`cache=True`)
+- [x] `prepare_dataset()` / `python -m halalquant prepare` for S&P 500 + AAOIFI panel
+- [x] On-disk SEC companyfacts cache (resumable EDGAR fetches)
+- [x] EBITDA / FCF columns on the metrics panel
 
 ### Tests
 
@@ -527,6 +572,7 @@ def test_evaluate_arrays_pass_and_fail():
 - [x] Public API tests against live yfinance + SEC
 - [x] SEC mapping tests (AAPL / JPM / MET)
 - [x] DJIM threshold math
+- [x] Prepared-cache tests (offline fake provider)
 
 ### Planned
 
@@ -537,6 +583,8 @@ def test_evaluate_arrays_pass_and_fail():
 ## What's Next
 
 `v0.1.0` is tagged. Non-US issuers use Yahoo annual statements (90-day publication lag instead of a true `filed_date`). SEC remains the PIT source for US CIKs.
+
+Research notebooks should call `hq.prepare_dataset()` once (or `python -m halalquant prepare`) and then pass `cache=True` so SEC / Yahoo are not hit on every re-run. See [USAGE.md §8](USAGE.md#8-prepare_dataset--warm-aaoifi-metrics-db).
 
 Track the plain-English checklist in [`main.todo`](main.todo).
 

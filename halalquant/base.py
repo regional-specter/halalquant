@@ -122,6 +122,10 @@ METRIC_COLUMNS: tuple[str, ...] = (
     "total_revenue",
     "non_compliant_income",
     "impure_ratio",
+    "ebitda",
+    "operating_cash_flow",
+    "capital_expenditure",
+    "free_cash_flow",
 )
 
 INCOME_COLUMNS: tuple[str, ...] = (
@@ -131,6 +135,10 @@ INCOME_COLUMNS: tuple[str, ...] = (
     "total_revenue",
     "interest_income",
     "non_compliant_income",
+    "ebitda",
+    "operating_cash_flow",
+    "capital_expenditure",
+    "free_cash_flow",
 )
 
 DIVIDEND_COLUMNS: tuple[str, ...] = (

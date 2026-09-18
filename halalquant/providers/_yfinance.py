@@ -140,8 +140,23 @@ class YFinanceProvider(BaseDataProvider):
             if raw is None or getattr(raw, "empty", True):
                 raw = getattr(ticker, "financials", None)
             frame = _yahoo_income_statement(raw, symbol, as_of=as_of_ts)
+            cash_raw = getattr(ticker, "cashflow", None)
+            if cash_raw is None or getattr(cash_raw, "empty", True):
+                cash_raw = getattr(ticker, "annual_cashflow", None)
+            cash = _yahoo_cashflow(cash_raw, symbol, as_of=as_of_ts)
+            if not cash.empty and not frame.empty:
+                frame = frame.merge(
+                    cash.drop(columns=["filed_date"], errors="ignore"),
+                    on=["symbol", "report_date"],
+                    how="left",
+                )
+            elif frame.empty and not cash.empty:
+                frame = cash
             if not frame.empty:
-                frames.append(frame)
+                for col in INCOME_COLUMNS:
+                    if col not in frame.columns:
+                        frame[col] = pd.NA
+                frames.append(frame[list(INCOME_COLUMNS)])
         if not frames:
             return pd.DataFrame(columns=list(INCOME_COLUMNS))
         return (
@@ -300,6 +315,13 @@ _YAHOO_BALANCE_ALIASES: dict[str, tuple[str, ...]] = {
 _YAHOO_INCOME_ALIASES: dict[str, tuple[str, ...]] = {
     "total_revenue": ("Total Revenue", "Operating Revenue"),
     "interest_income": ("Interest Income",),
+    "ebitda": ("EBITDA",),
+}
+
+_YAHOO_CASH_ALIASES: dict[str, tuple[str, ...]] = {
+    "operating_cash_flow": ("Operating Cash Flow",),
+    "capital_expenditure": ("Capital Expenditure",),
+    "free_cash_flow": ("Free Cash Flow",),
 }
 
 
@@ -367,7 +389,8 @@ def _yahoo_income_statement(
             continue
         revenue = _yahoo_value(raw, col, _YAHOO_INCOME_ALIASES["total_revenue"])
         interest = _yahoo_value(raw, col, _YAHOO_INCOME_ALIASES["interest_income"])
-        if revenue is None and interest is None:
+        ebitda = _yahoo_value(raw, col, _YAHOO_INCOME_ALIASES["ebitda"])
+        if revenue is None and interest is None and ebitda is None:
             continue
         rows.append(
             {
@@ -377,10 +400,53 @@ def _yahoo_income_statement(
                 "total_revenue": revenue,
                 "interest_income": interest,
                 "non_compliant_income": interest,
+                "ebitda": ebitda,
+                "operating_cash_flow": None,
+                "capital_expenditure": None,
+                "free_cash_flow": None,
             }
         )
     if not rows:
         return pd.DataFrame(columns=list(INCOME_COLUMNS))
+    return pd.DataFrame(rows)
+
+
+def _yahoo_cashflow(
+    raw: Any,
+    symbol: str,
+    as_of: Optional[pd.Timestamp] = None,
+) -> pd.DataFrame:
+    if raw is None or not isinstance(raw, pd.DataFrame) or raw.empty:
+        return pd.DataFrame(
+            columns=["symbol", "report_date", "filed_date", "operating_cash_flow", "capital_expenditure", "free_cash_flow"]
+        )
+    rows: list[dict[str, Any]] = []
+    for col in raw.columns:
+        report = pd.Timestamp(col)
+        filed = report + YAHOO_PUBLICATION_LAG
+        if as_of is not None and filed > as_of:
+            continue
+        ocf = _yahoo_value(raw, col, _YAHOO_CASH_ALIASES["operating_cash_flow"])
+        capex = _yahoo_value(raw, col, _YAHOO_CASH_ALIASES["capital_expenditure"])
+        fcf = _yahoo_value(raw, col, _YAHOO_CASH_ALIASES["free_cash_flow"])
+        if fcf is None and ocf is not None and capex is not None:
+            fcf = ocf + capex if capex < 0 else ocf - abs(capex)
+        if ocf is None and capex is None and fcf is None:
+            continue
+        rows.append(
+            {
+                "symbol": symbol,
+                "report_date": report.date(),
+                "filed_date": filed.date(),
+                "operating_cash_flow": ocf,
+                "capital_expenditure": capex,
+                "free_cash_flow": fcf,
+            }
+        )
+    if not rows:
+        return pd.DataFrame(
+            columns=["symbol", "report_date", "filed_date", "operating_cash_flow", "capital_expenditure", "free_cash_flow"]
+        )
     return pd.DataFrame(rows)
 
 
