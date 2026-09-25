@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS balance_sheets (
     symbol VARCHAR NOT NULL,
     report_date DATE NOT NULL,
     filed_date DATE NOT NULL,
+    fiscal_period VARCHAR NOT NULL,
     total_debt DOUBLE,
     short_term_debt DOUBLE,
     long_term_debt DOUBLE,
@@ -27,13 +28,15 @@ CREATE TABLE IF NOT EXISTS balance_sheets (
     market_cap DOUBLE,
     market_cap_24m DOUBLE,
     shares_outstanding DOUBLE,
-    PRIMARY KEY (symbol, report_date, filed_date)
+    form VARCHAR,
+    PRIMARY KEY (symbol, report_date, filed_date, fiscal_period)
 );
 
 CREATE TABLE IF NOT EXISTS income_statements (
     symbol VARCHAR NOT NULL,
     report_date DATE NOT NULL,
     filed_date DATE NOT NULL,
+    fiscal_period VARCHAR NOT NULL,
     total_revenue DOUBLE,
     interest_income DOUBLE,
     non_compliant_income DOUBLE,
@@ -41,7 +44,9 @@ CREATE TABLE IF NOT EXISTS income_statements (
     operating_cash_flow DOUBLE,
     capital_expenditure DOUBLE,
     free_cash_flow DOUBLE,
-    PRIMARY KEY (symbol, report_date, filed_date)
+    form VARCHAR,
+    period_days INTEGER,
+    PRIMARY KEY (symbol, report_date, filed_date, fiscal_period)
 );
 
 CREATE TABLE IF NOT EXISTS dividends (
@@ -77,7 +82,29 @@ CREATE TABLE IF NOT EXISTS financial_metrics (
     operating_cash_flow DOUBLE,
     capital_expenditure DOUBLE,
     free_cash_flow DOUBLE,
+    fcf_basis VARCHAR,
     PRIMARY KEY (symbol, as_of, freq, report_date)
+);
+
+CREATE TABLE IF NOT EXISTS filings (
+    symbol VARCHAR NOT NULL,
+    cik VARCHAR NOT NULL,
+    form VARCHAR NOT NULL,
+    report_date DATE NOT NULL,
+    filed_date DATE NOT NULL,
+    fiscal_period VARCHAR NOT NULL,
+    PRIMARY KEY (symbol, form, report_date, filed_date, fiscal_period)
+);
+
+CREATE TABLE IF NOT EXISTS universe_stints (
+    universe VARCHAR NOT NULL,
+    symbol VARCHAR NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE,
+    name VARCHAR,
+    sector VARCHAR,
+    industry VARCHAR,
+    PRIMARY KEY (universe, symbol, start_date)
 );
 
 CREATE TABLE IF NOT EXISTS compliance_flags (
@@ -115,7 +142,53 @@ CREATE TABLE IF NOT EXISTS dataset_meta (
 # Existing on-disk caches created before shares_outstanding / extra tables.
 MIGRATION_SQL = (
     "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS shares_outstanding DOUBLE",
+    "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS form VARCHAR",
+    "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS fiscal_period VARCHAR",
+    "ALTER TABLE income_statements ADD COLUMN IF NOT EXISTS form VARCHAR",
+    "ALTER TABLE income_statements ADD COLUMN IF NOT EXISTS fiscal_period VARCHAR",
+    "ALTER TABLE financial_metrics ADD COLUMN IF NOT EXISTS fcf_basis VARCHAR",
+    "ALTER TABLE income_statements ADD COLUMN IF NOT EXISTS period_days INTEGER",
 )
+
+BALANCE_SHEET_DDL = """
+CREATE TABLE IF NOT EXISTS balance_sheets (
+    symbol VARCHAR NOT NULL,
+    report_date DATE NOT NULL,
+    filed_date DATE NOT NULL,
+    fiscal_period VARCHAR NOT NULL,
+    total_debt DOUBLE,
+    short_term_debt DOUBLE,
+    long_term_debt DOUBLE,
+    cash_and_equiv DOUBLE,
+    interest_bearing_securities DOUBLE,
+    receivables DOUBLE,
+    liquid_assets DOUBLE,
+    market_cap DOUBLE,
+    market_cap_24m DOUBLE,
+    shares_outstanding DOUBLE,
+    form VARCHAR,
+    PRIMARY KEY (symbol, report_date, filed_date, fiscal_period)
+);
+"""
+
+INCOME_DDL = """
+CREATE TABLE IF NOT EXISTS income_statements (
+    symbol VARCHAR NOT NULL,
+    report_date DATE NOT NULL,
+    filed_date DATE NOT NULL,
+    fiscal_period VARCHAR NOT NULL,
+    total_revenue DOUBLE,
+    interest_income DOUBLE,
+    non_compliant_income DOUBLE,
+    ebitda DOUBLE,
+    operating_cash_flow DOUBLE,
+    capital_expenditure DOUBLE,
+    free_cash_flow DOUBLE,
+    form VARCHAR,
+    period_days INTEGER,
+    PRIMARY KEY (symbol, report_date, filed_date, fiscal_period)
+);
+"""
 
 PRICE_TABLE_COLUMNS = (
     "symbol",
@@ -142,6 +215,8 @@ BALANCE_SHEET_TABLE_COLUMNS = (
     "market_cap",
     "market_cap_24m",
     "shares_outstanding",
+    "form",
+    "fiscal_period",
 )
 
 INCOME_TABLE_COLUMNS = (
@@ -155,6 +230,9 @@ INCOME_TABLE_COLUMNS = (
     "operating_cash_flow",
     "capital_expenditure",
     "free_cash_flow",
+    "form",
+    "fiscal_period",
+    "period_days",
 )
 
 DIVIDEND_TABLE_COLUMNS = (
@@ -189,6 +267,7 @@ METRICS_TABLE_COLUMNS = (
     "operating_cash_flow",
     "capital_expenditure",
     "free_cash_flow",
+    "fcf_basis",
 )
 
 COMPLIANCE_TABLE_COLUMNS = (
@@ -213,5 +292,26 @@ ALLOWED_TABLES = frozenset(
         "sector_map",
         "universe_members",
         "dataset_meta",
+        "filings",
+        "universe_stints",
     }
+)
+
+FILING_TABLE_COLUMNS = (
+    "symbol",
+    "cik",
+    "form",
+    "report_date",
+    "filed_date",
+    "fiscal_period",
+)
+
+STINT_TABLE_COLUMNS = (
+    "universe",
+    "symbol",
+    "start_date",
+    "end_date",
+    "name",
+    "sector",
+    "industry",
 )

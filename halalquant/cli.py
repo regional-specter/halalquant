@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import Optional, Sequence
 
-from halalquant.database._dataset import prepare_dataset
+from halalquant.database._dataset import prepare_dataset, refresh_dataset
 
 
 def prepare_main(argv: Optional[Sequence[str]] = None) -> None:
@@ -69,6 +69,46 @@ def prepare_main(argv: Optional[Sequence[str]] = None) -> None:
         )
     except Exception as exc:
         sys.stderr.write(f"prepare failed: {exc}\n")
+        raise SystemExit(1) from exc
+    print()
+    print(summary.to_string(index=False))
+    print(f"\n[{len(summary)} symbol(s)]")
+
+
+def refresh_main(argv: Optional[Sequence[str]] = None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="python -m halalquant refresh",
+        description=(
+            "Append prices, dividends, and new 10-Q/10-K facts through an as-of "
+            "date. Does not rebuild the cached universe from scratch."
+        ),
+    )
+    parser.add_argument("--as-of", default="today", help="Inclusive as-of date, or 'today'.")
+    parser.add_argument("--universe", default="sp500")
+    parser.add_argument("--tickers", default=None, help="Comma-separated symbols. Overrides --universe.")
+    parser.add_argument("--start", default=None, help="History start used when extending coverage.")
+    parser.add_argument("--freq", default="ME")
+    parser.add_argument("--cache", default=None)
+    parser.add_argument("--no-sector-filter", action="store_true")
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    freq: Optional[str]
+    if str(args.freq).strip().lower() in {"", "none", "annual"}:
+        freq = None
+    else:
+        freq = args.freq
+    try:
+        summary = refresh_dataset(
+            as_of=args.as_of,
+            tickers=args.tickers,
+            universe=args.universe,
+            start=args.start,
+            freq=freq,
+            cache=args.cache if args.cache else True,
+            apply_sector_filter=not args.no_sector_filter,
+            progress=True,
+        )
+    except Exception as exc:
+        sys.stderr.write(f"refresh failed: {exc}\n")
         raise SystemExit(1) from exc
     print()
     print(summary.to_string(index=False))

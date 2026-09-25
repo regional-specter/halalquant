@@ -11,6 +11,11 @@ def main() -> None:
 
         prepare_main(sys.argv[2:])
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "refresh":
+        from halalquant.cli import refresh_main
+
+        refresh_main(sys.argv[2:])
+        return
     from halalquant.showcase import main as showcase_main
 
     showcase_main()

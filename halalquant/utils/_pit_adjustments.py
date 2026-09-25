@@ -37,7 +37,15 @@ def as_of_filter(
     if known.empty:
         return known
 
-    known = known.sort_values([report_col, filed_col])
+    if "fiscal_period" in known.columns:
+        fp = known["fiscal_period"].fillna("").astype(str).str.upper()
+        # On a tied report/filed date, prefer the full-year statement over a
+        # quarterly slice that shares the same period end (10-K Q4 vs FY).
+        known = known.assign(_pit_rank=(~fp.isin(["Q1", "Q2", "Q3", "Q4"])).astype(int))
+        known = known.sort_values([report_col, filed_col, "_pit_rank"])
+        known = known.drop(columns="_pit_rank")
+    else:
+        known = known.sort_values([report_col, filed_col])
     return known.groupby("symbol", as_index=False).tail(1).reset_index(drop=True)
 
 

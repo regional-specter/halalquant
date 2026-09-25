@@ -17,6 +17,7 @@ from halalquant.providers._base_provider import AbstractFetcher
 
 TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 
 # First tag that covers a given fiscal year wins. Later tags fill years the
 # preferred tag does not report (banks/insurers use different us-gaap names).
@@ -108,8 +109,11 @@ INCOME_TAGS: dict[str, tuple[str, ...]] = {
 }
 
 ANNUAL_FORMS = {"10-K", "10-K/A"}
+QUARTERLY_FORMS = {"10-Q", "10-Q/A"}
+STATEMENT_FORMS = ANNUAL_FORMS | QUARTERLY_FORMS
+QUARTER_PERIODS = {"Q1", "Q2", "Q3", "Q4"}
 DEFAULT_SEC_USER_AGENT = (
-    "HalalQuant/0.1.0 (halalquant-research@example.com; override with HALALQUANT_SEC_UA)"
+    "HalalQuant/0.3.0 (halalquant-research@example.com; override with HALALQUANT_SEC_UA)"
 )
 
 # SEC company_tickers.json can point a listed ticker at a new holding-company
@@ -264,6 +268,101 @@ class SECEdgarProvider(AbstractFetcher):
         self._remember_facts(key, facts)
         return facts
 
+    def invalidate_facts(self, symbol: str) -> None:
+        """Drop one cached companyfacts blob so the next read hits EDGAR."""
+        key = str(symbol).upper()
+        self._facts_cache.pop(key, None)
+        path = self._facts_path(key)
+        if path is not None and path.exists():
+            try:
+                path.unlink()
+            except OSError:
+                return
+
+    def recent_filings(self, symbol: str) -> pd.DataFrame:
+        """10-Q / 10-K rows from the SEC submissions index."""
+        frame, _accession, _etag, _unchanged = self.submission_index(symbol)
+        return frame
+
+    def submission_index(
+        self,
+        symbol: str,
+        etag: Optional[str] = None,
+    ) -> tuple[pd.DataFrame, Optional[str], Optional[str], bool]:
+        """
+        Submissions index for one CIK.
+
+        Returns ``(filings, newest_statement_accession, etag, not_modified)``.
+        Pass the previous ``ETag`` so an unchanged CIK comes back as HTTP 304
+        and companyfacts is not downloaded again.
+        """
+        empty = pd.DataFrame(
+            columns=[
+                "symbol",
+                "cik",
+                "form",
+                "report_date",
+                "filed_date",
+                "fiscal_period",
+                "accession",
+            ]
+        )
+        try:
+            cik = self._ticker_map().get(str(symbol).upper())
+        except ValueError:
+            return empty, None, etag, False
+        if cik is None:
+            return empty, None, etag, False
+        url = SUBMISSIONS_URL.format(cik=f"{cik:010d}")
+        headers = {"If-None-Match": etag} if etag else None
+        try:
+            response = self._request(url, headers=headers)
+        except requests.HTTPError:
+            return empty, None, etag, False
+        new_etag = response.headers.get("ETag") or etag
+        if response.status_code == 304:
+            return empty, None, new_etag, True
+        try:
+            payload = response.json()
+        except ValueError:
+            return empty, None, new_etag, False
+        recent = {}
+        if isinstance(payload, dict):
+            recent = payload.get("filings", {}).get("recent", {}) or {}
+        forms = list(recent.get("form") or [])
+        filed = list(recent.get("filingDate") or [])
+        reports = list(recent.get("reportDate") or [])
+        accessions = list(recent.get("accessionNumber") or [])
+        newest: Optional[str] = None
+        rows: list[dict[str, Any]] = []
+        for idx, form in enumerate(forms):
+            form_s = str(form or "").upper()
+            accession = str(accessions[idx]) if idx < len(accessions) else ""
+            if newest is None and form_s in STATEMENT_FORMS and accession:
+                newest = accession
+            filed_date = filed[idx] if idx < len(filed) else None
+            report_date = reports[idx] if idx < len(reports) else None
+            if form_s not in STATEMENT_FORMS or not filed_date:
+                continue
+            rows.append(
+                {
+                    "symbol": str(symbol).upper(),
+                    "cik": str(int(cik)),
+                    "form": form_s,
+                    "report_date": report_date or None,
+                    "filed_date": filed_date,
+                    "fiscal_period": "",
+                    "accession": accession,
+                }
+            )
+        if not rows:
+            return empty, newest, new_etag, False
+        frame = pd.DataFrame(rows)
+        for col in ("report_date", "filed_date"):
+            frame[col] = pd.to_datetime(frame[col], errors="coerce").dt.date
+        frame = frame.dropna(subset=["filed_date"]).reset_index(drop=True)
+        return frame, newest, new_etag, False
+
     def _remember_facts(self, key: str, facts: Optional[dict[str, Any]]) -> None:
         self._facts_cache[key] = facts
         self._facts_cache.move_to_end(key)
@@ -303,21 +402,38 @@ class SECEdgarProvider(AbstractFetcher):
         facts: dict[str, Any],
         as_of: Optional[str] = None,
     ) -> pd.DataFrame:
-        merged: dict[tuple[str, str], dict[str, Optional[float]]] = defaultdict(dict)
+        merged: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(dict)
         for field, tags in BALANCE_TAGS.items():
-            for end, filed, val in _iter_annual_points(
+            for end, filed, val, form, period, days in _iter_statement_points(
                 facts,
                 tags,
+                kind="annual",
                 as_of=as_of,
                 share_units=field == "shares_outstanding",
             ):
-                merged[(end, filed)][field] = val
+                slot = merged[(end, filed, period)]
+                slot[field] = val
+                slot["form"] = form
+                slot["fiscal_period"] = period
+                if days is not None:
+                    slot["period_days"] = days
+            for end, filed, val, form, period, days in _iter_statement_points(
+                facts,
+                tags,
+                kind="quarter",
+                as_of=as_of,
+                share_units=field == "shares_outstanding",
+            ):
+                slot = merged[(end, filed, period)]
+                slot[field] = val
+                slot["form"] = form
+                slot["fiscal_period"] = period
 
         if not merged:
             return pd.DataFrame()
 
         rows: list[dict[str, Any]] = []
-        for (end, filed), vals in sorted(merged.items()):
+        for (end, filed, period), vals in sorted(merged.items()):
             short_debt = vals.get("short_term_debt")
             long_debt = vals.get("long_term_debt")
             tagged_total = vals.get("total_debt")
@@ -347,6 +463,8 @@ class SECEdgarProvider(AbstractFetcher):
                     "market_cap": None,
                     "market_cap_24m": None,
                     "shares_outstanding": vals.get("shares_outstanding"),
+                    "form": vals.get("form") or "",
+                    "fiscal_period": vals.get("fiscal_period") or period or "",
                 }
             )
         frame = pd.DataFrame(rows)
@@ -360,16 +478,27 @@ class SECEdgarProvider(AbstractFetcher):
         facts: dict[str, Any],
         as_of: Optional[str] = None,
     ) -> pd.DataFrame:
-        merged: dict[tuple[str, str], dict[str, Optional[float]]] = defaultdict(dict)
+        merged: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(dict)
         for field, tags in INCOME_TAGS.items():
-            for end, filed, val in _iter_annual_points(facts, tags, as_of=as_of):
-                merged[(end, filed)][field] = val
+            for kind in ("annual", "quarter"):
+                for end, filed, val, form, period, days in _iter_statement_points(
+                    facts,
+                    tags,
+                    kind=kind,
+                    as_of=as_of,
+                ):
+                    slot = merged[(end, filed, period)]
+                    slot[field] = val
+                    slot["form"] = form
+                    slot["fiscal_period"] = period
+                    if days is not None:
+                        slot["period_days"] = days
 
         if not merged:
-            return pd.DataFrame(columns=list(INCOME_COLUMNS))
+            return pd.DataFrame(columns=list(INCOME_COLUMNS) + ["form", "fiscal_period"])
 
         rows: list[dict[str, Any]] = []
-        for (end, filed), vals in sorted(merged.items()):
+        for (end, filed, period), vals in sorted(merged.items()):
             revenue = vals.get("total_revenue")
             interest = vals.get("interest_income")
             ocf = vals.get("operating_cash_flow")
@@ -400,12 +529,16 @@ class SECEdgarProvider(AbstractFetcher):
                     "operating_cash_flow": ocf,
                     "capital_expenditure": capex,
                     "free_cash_flow": fcf,
+                    "form": vals.get("form") or "",
+                    "fiscal_period": vals.get("fiscal_period") or period or "",
+                    "period_days": vals.get("period_days"),
                 }
             )
         frame = pd.DataFrame(rows)
         for col in ("report_date", "filed_date"):
             frame[col] = pd.to_datetime(frame[col], errors="coerce").dt.date
-        return frame[list(INCOME_COLUMNS)]
+        columns = list(INCOME_COLUMNS) + ["form", "fiscal_period", "period_days"]
+        return frame[columns]
 
 
 def _iter_annual_points(
@@ -414,18 +547,41 @@ def _iter_annual_points(
     as_of: Optional[str] = None,
     share_units: bool = False,
 ) -> list[tuple[str, str, float]]:
-    """
-    Return one (report_end, filed_date, value) row per annual XBRL filing.
+    """Annual (report_end, filed_date, value) rows. 10-Q facts are excluded."""
+    return [
+        (end, filed, val)
+        for end, filed, val, _form, _period, _days in _iter_statement_points(
+            facts,
+            tags,
+            kind="annual",
+            as_of=as_of,
+            share_units=share_units,
+        )
+    ]
 
-    Each SEC filing revision is kept so monthly point-in-time screens can use
-    the values that were actually public on each snapshot date.
+
+def _iter_statement_points(
+    facts: dict[str, Any],
+    tags: Sequence[str],
+    kind: str,
+    as_of: Optional[str] = None,
+    share_units: bool = False,
+) -> list[tuple[str, str, float, str, str, Optional[int]]]:
+    """
+    Return ``(report_end, filed_date, value, form, fiscal_period)`` rows.
+
+    ``kind="annual"`` keeps 10-K / FY facts (same selection as v0.1).
+    ``kind="quarter"`` keeps 10-Q facts and ~90-day Q4 facts. Year-to-date
+    10-Q durations are skipped so a nine-month total is not treated as a quarter.
+    Each filing revision is kept so point-in-time screens use the values that
+    were public on the snapshot date.
     """
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
     dei = facts.get("facts", {}).get("dei", {})
     as_of_ts = pd.Timestamp(as_of) if as_of else None
     unit_keys = ("shares",) if share_units else ("USD",)
-    seen: set[tuple[str, str]] = set()
-    rows: list[tuple[str, str, float]] = []
+    seen: set[tuple[str, str, str]] = set()
+    rows: list[tuple[str, str, float, str, str, Optional[int]]] = []
 
     for tag in tags:
         node = us_gaap.get(tag) or dei.get(tag)
@@ -445,22 +601,78 @@ def _iter_annual_points(
             end = point.get("end")
             filed = point.get("filed") or end
             val = point.get("val")
-            form = str(point.get("form") or "")
-            fp = str(point.get("fp") or "")
-            annual = form in ANNUAL_FORMS or fp == "FY"
-            if not annual or not end or filed is None or val is None:
+            if not end or filed is None or val is None:
                 continue
+            # A 10-K often repeats the same period end as a 90-day Q4 slice.
+            # Keep that slice for TTM only. The annual row stays the full-year fact.
+            if kind == "annual":
+                duration = _duration_days(point)
+                if duration is not None and 70 <= duration <= 120:
+                    continue
+            parsed = _classify_point(point, kind)
+            if parsed is None:
+                continue
+            form, period = parsed
             if as_of_ts is not None and pd.Timestamp(filed) > as_of_ts:
                 continue
+            # Annual selection stays one value per (period end, filed date),
+            # matching v0.1. Quarters are distinct fiscal periods.
             end_s, filed_s = str(end), str(filed)
-            if (end_s, filed_s) in seen:
+            key = (end_s, filed_s, "" if kind == "annual" else period)
+            if key in seen:
                 continue
-            seen.add((end_s, filed_s))
+            seen.add(key)
             try:
-                rows.append((end_s, filed_s, float(val)))
+                rows.append((end_s, filed_s, float(val), form, period, _duration_days(point)))
             except (TypeError, ValueError):
                 continue
     return rows
+
+
+def _duration_days(point: dict[str, Any]) -> Optional[int]:
+    start = point.get("start")
+    end = point.get("end")
+    if not start or not end:
+        return None
+    try:
+        return int((pd.Timestamp(end) - pd.Timestamp(start)).days)
+    except (TypeError, ValueError):
+        return None
+
+
+def _classify_point(point: dict[str, Any], kind: str) -> Optional[tuple[str, str]]:
+    form = str(point.get("form") or "").upper()
+    fp = str(point.get("fp") or "").upper()
+    if kind == "annual":
+        if form in ANNUAL_FORMS or fp == "FY":
+            period = "FY" if fp in {"", "FY"} else fp
+            return form or "10-K", period
+        return None
+    if kind != "quarter":
+        return None
+    if not _is_quarter_fact(point, form, fp):
+        return None
+    period = fp if fp in QUARTER_PERIODS else "Q"
+    return form or "10-Q", period
+
+
+def _is_quarter_fact(point: dict[str, Any], form: str, fp: str) -> bool:
+    start = point.get("start")
+    end = point.get("end")
+    days: Optional[int] = None
+    if start and end:
+        try:
+            days = int((pd.Timestamp(end) - pd.Timestamp(start)).days)
+        except (TypeError, ValueError):
+            days = None
+    instant = days is None or days <= 7
+    quarterly_label = form in QUARTERLY_FORMS or fp in QUARTER_PERIODS
+    q4_in_annual = form in ANNUAL_FORMS and fp == "Q4"
+    if not quarterly_label and not q4_in_annual:
+        return False
+    if instant:
+        return quarterly_label
+    return days is not None and 70 <= days <= 120
 
 
 def _free_cash_flow(ocf: Optional[float], capex: Optional[float]) -> Optional[float]:

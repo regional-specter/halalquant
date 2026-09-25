@@ -9,14 +9,18 @@ import pandas as pd
 
 from halalquant.database._models import (
     ALLOWED_TABLES,
+    BALANCE_SHEET_DDL,
     BALANCE_SHEET_TABLE_COLUMNS,
     COMPLIANCE_TABLE_COLUMNS,
     DIVIDEND_TABLE_COLUMNS,
+    FILING_TABLE_COLUMNS,
+    INCOME_DDL,
     INCOME_TABLE_COLUMNS,
     METRICS_TABLE_COLUMNS,
     MIGRATION_SQL,
     PRICE_TABLE_COLUMNS,
     SCHEMA_SQL,
+    STINT_TABLE_COLUMNS,
 )
 
 try:
@@ -43,8 +47,21 @@ class DuckDBDriver:
     def init_schema(self) -> None:
         self.con.execute(SCHEMA_SQL)
         for statement in MIGRATION_SQL:
-            self.con.execute(statement)
+            try:
+                self.con.execute(statement)
+            except duckdb.Error:
+                continue
         self._ensure_metrics_primary_key()
+        self._ensure_period_primary_key(
+            "balance_sheets",
+            BALANCE_SHEET_DDL,
+            BALANCE_SHEET_TABLE_COLUMNS,
+        )
+        self._ensure_period_primary_key(
+            "income_statements",
+            INCOME_DDL,
+            INCOME_TABLE_COLUMNS,
+        )
 
     def _ensure_metrics_primary_key(self) -> None:
         """Keep restated 10-K comparatives: PK must include report_date."""
@@ -66,6 +83,55 @@ class DuckDBDriver:
             return
         self.con.execute("DROP TABLE IF EXISTS financial_metrics")
         self.con.execute(SCHEMA_SQL)
+
+    def _pk_columns(self, table: str) -> list[str]:
+        rows = self.con.execute(
+            """
+            SELECT constraint_column_names
+            FROM duckdb_constraints()
+            WHERE table_name = ? AND constraint_type = 'PRIMARY KEY'
+            """,
+            [table],
+        ).fetchall()
+        if not rows:
+            return []
+        raw = rows[0][0]
+        if isinstance(raw, (list, tuple)):
+            return [str(c).lower() for c in raw]
+        return [part.strip().lower() for part in str(raw).strip("[]").split(",") if part.strip()]
+
+    def _ensure_period_primary_key(
+        self,
+        table: str,
+        ddl: str,
+        columns: Sequence[str],
+    ) -> None:
+        """Keep 10-Q and 10-K rows that share a period end: PK includes fiscal_period."""
+        if "fiscal_period" in self._pk_columns(table):
+            return
+        legacy = f"_{table}_legacy"
+        self.con.execute(f"ALTER TABLE {table} RENAME TO {legacy}")
+        self.con.execute(ddl)
+        info = self.con.execute(f"PRAGMA table_info('{legacy}')").fetchdf()
+        legacy_cols = {str(name).lower() for name in info["name"]}
+        select_bits: list[str] = []
+        for col in columns:
+            if col in legacy_cols:
+                if col in {"form", "fiscal_period"}:
+                    select_bits.append(
+                        f"COALESCE(CAST({col} AS VARCHAR), '') AS {col}"
+                    )
+                else:
+                    select_bits.append(col)
+            elif col in {"form", "fiscal_period"}:
+                select_bits.append(f"'' AS {col}")
+            else:
+                select_bits.append(f"NULL AS {col}")
+        cols_sql = ", ".join(columns)
+        self.con.execute(
+            f"INSERT INTO {table} ({cols_sql}) SELECT {', '.join(select_bits)} FROM {legacy}"
+        )
+        self.con.execute(f"DROP TABLE {legacy}")
 
     def write_prices(self, frame: pd.DataFrame) -> None:
         self._insert("prices", frame, PRICE_TABLE_COLUMNS, date_cols=("date",))
@@ -265,6 +331,67 @@ class DuckDBDriver:
             return {}
         return {str(row["key"]): str(row["value"]) for _, row in frame.iterrows()}
 
+    def read_price_dates(self, symbols: Sequence[str]) -> pd.DataFrame:
+        if not symbols:
+            return pd.DataFrame(columns=["symbol", "date"])
+        params: list[object] = list(symbols)
+        placeholders = ", ".join(["?"] * len(symbols))
+        return self.con.execute(
+            f"""
+            SELECT symbol, date
+            FROM prices
+            WHERE symbol IN ({placeholders})
+            ORDER BY symbol, date
+            """,
+            params,
+        ).fetchdf()
+
+    def write_filings(self, frame: pd.DataFrame) -> None:
+        self._insert(
+            "filings",
+            frame,
+            FILING_TABLE_COLUMNS,
+            date_cols=("report_date", "filed_date"),
+        )
+
+    def read_filings(
+        self,
+        symbols: Optional[list[str]] = None,
+        since: Optional[str] = None,
+        as_of: Optional[str] = None,
+    ) -> pd.DataFrame:
+        clauses: list[str] = []
+        params: list[object] = []
+        if symbols:
+            clauses.append(self._in("symbol", symbols, params))
+        if since:
+            clauses.append("filed_date > ?")
+            params.append(since)
+        if as_of:
+            clauses.append("filed_date <= ?")
+            params.append(as_of)
+        return self._select("filings", clauses, params, "symbol, filed_date, form")
+
+    def write_stints(self, frame: pd.DataFrame) -> None:
+        self._insert(
+            "universe_stints",
+            frame,
+            STINT_TABLE_COLUMNS,
+            date_cols=("start_date", "end_date"),
+        )
+
+    def read_stints(self, universe: Optional[str] = None) -> pd.DataFrame:
+        clauses: list[str] = []
+        params: list[object] = []
+        if universe:
+            clauses.append("universe = ?")
+            params.append(universe)
+        return self._select("universe_stints", clauses, params, "universe, symbol, start_date")
+
+    def replace_universe(self, frame: pd.DataFrame, universe: str) -> None:
+        self.con.execute("DELETE FROM universe_members WHERE universe = ?", [universe])
+        self.write_universe(frame)
+
     def read_table(self, table: str) -> pd.DataFrame:
         if table not in ALLOWED_TABLES:
             raise ValueError(f"Unknown table: {table}. Allowed: {sorted(ALLOWED_TABLES)}")
@@ -320,5 +447,14 @@ def _align_frame(
             prepared[col] = pd.NA
     for col in date_cols:
         if col in prepared.columns:
-            prepared[col] = pd.to_datetime(prepared[col], errors="coerce").dt.date
+            parsed = pd.to_datetime(prepared[col], errors="coerce")
+        prepared[col] = parsed.dt.date.where(parsed.notna(), None)
+    for col in ("form", "fiscal_period", "cik"):
+        if col in columns and col in prepared.columns:
+            text = prepared[col]
+            missing = text.isna() | text.astype(str).str.strip().str.lower().isin(
+                {"", "none", "nan", "<na>", "nat"}
+            )
+            prepared[col] = text.astype(str).str.strip()
+            prepared.loc[missing, col] = ""
     return prepared.loc[:, list(columns)]

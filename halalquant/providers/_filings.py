@@ -83,3 +83,30 @@ class FilingsProvider(BaseDataProvider):
             .sort_values(["symbol", "report_date"])
             .reset_index(drop=True)
         )
+
+    def recent_filings(self, symbols: Sequence[str]) -> pd.DataFrame:
+        """SEC submissions index for symbols that have a CIK."""
+        frames: list[pd.DataFrame] = []
+        for symbol in symbols:
+            try:
+                if not self.sec.has_cik(symbol):
+                    continue
+            except (ValueError, OSError):
+                continue
+            frame = self.sec.recent_filings(symbol)
+            if frame is not None and not frame.empty:
+                frames.append(frame)
+        if not frames:
+            return pd.DataFrame(
+                columns=["symbol", "cik", "form", "report_date", "filed_date", "fiscal_period"]
+            )
+        return pd.concat(frames, ignore_index=True)
+
+    def invalidate_facts(self, symbols: Sequence[str]) -> None:
+        """Drop on-disk companyfacts for symbols that are about to be re-fetched."""
+        for symbol in symbols:
+            try:
+                if self.sec.has_cik(symbol):
+                    self.sec.invalidate_facts(symbol)
+            except (ValueError, OSError):
+                continue

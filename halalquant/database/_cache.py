@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
@@ -10,6 +11,7 @@ import pandas as pd
 
 from halalquant.base import BaseDataProvider, DateLike
 from halalquant.database._duckdb_driver import DuckDBDriver
+from halalquant.database._gaps import price_gap_windows
 from halalquant.utils._pit_adjustments import as_of_filter
 
 _PRICE_CHUNK = 40
@@ -243,8 +245,26 @@ class LocalCache:
     def read_meta(self) -> dict[str, str]:
         return self.db.read_meta()
 
-    def export_parquet(self, table: str, path: Optional[Union[str, Path]] = None) -> Path:
+    def export_parquet(
+        self,
+        table: str,
+        path: Optional[Union[str, Path]] = None,
+        partition_by_year: bool = False,
+    ) -> Path:
         frame = self.db.read_table(table)
+        if partition_by_year and table == "prices":
+            root = Path(path) if path else self.parquet_dir / "prices"
+            if frame.empty:
+                root.mkdir(parents=True, exist_ok=True)
+                return root
+            years = pd.to_datetime(frame["date"], errors="coerce").dt.year
+            for year, part in frame.groupby(years):
+                if pd.isna(year):
+                    continue
+                dest = root / f"year={int(year)}" / "part.parquet"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                part.to_parquet(dest, index=False)
+            return root
         target = Path(path) if path else self.parquet_dir / f"{table}.parquet"
         target.parent.mkdir(parents=True, exist_ok=True)
         frame.to_parquet(target, index=False)
@@ -263,6 +283,8 @@ class LocalCache:
             "financial_metrics": self.db.write_metrics,
             "compliance_flags": self.db.write_compliance,
             "universe_members": self.db.write_universe,
+            "filings": self.db.write_filings,
+            "universe_stints": self.db.write_stints,
         }
         if table == "sector_map":
             mapping = {
@@ -331,6 +353,117 @@ class LocalCache:
         missing = [s for s in symbols if s not in covered and s not in attempted]
         return missing
 
+    def append_prices(
+        self,
+        symbols: Sequence[str],
+        start: DateLike,
+        end: DateLike,
+    ) -> dict[str, int]:
+        """Fetch only missing price windows. Returns new bar counts per symbol."""
+        symbols_list = list(dict.fromkeys(symbols))
+        start_d = pd.Timestamp(start).date()
+        end_d = pd.Timestamp(end).date()
+        before = self._row_counts(self.db.price_coverage(symbols_list))
+        cached = self.db.read_price_dates(symbols_list)
+        by_symbol = (
+            {symbol: frame["date"].tolist() for symbol, frame in cached.groupby("symbol")}
+            if not cached.empty
+            else {}
+        )
+        batches: dict[tuple[date, date], list[str]] = {}
+        meta = self.read_meta()
+        for symbol in symbols_list:
+            for window in price_gap_windows(by_symbol.get(symbol, []), start_d, end_d):
+                key = f"prices_gap_empty:{symbol}:{window[0].isoformat()}:{window[1].isoformat()}"
+                if meta.get(key) == "1":
+                    continue
+                batches.setdefault(window, []).append(symbol)
+
+        for (window_start, window_end), window_symbols in batches.items():
+            frames = []
+            for chunk in _chunks(window_symbols, _PRICE_CHUNK):
+                frames.append(self.market.get_prices(chunk, start=window_start, end=window_end))
+            fresh = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+            self.db.write_prices(fresh)
+            if fresh is None or fresh.empty:
+                if window_end < date.today():
+                    self.db.write_meta(
+                        {
+                            f"prices_gap_empty:{symbol}:{window_start.isoformat()}:{window_end.isoformat()}": "1"
+                            for symbol in window_symbols
+                        }
+                    )
+                continue
+            got = set(fresh["symbol"].astype(str)) if "symbol" in fresh.columns else set()
+            if window_end < date.today():
+                missed = [symbol for symbol in window_symbols if symbol not in got]
+                if missed:
+                    self.db.write_meta(
+                        {
+                            f"prices_gap_empty:{symbol}:{window_start.isoformat()}:{window_end.isoformat()}": "1"
+                            for symbol in missed
+                        }
+                    )
+        self._maybe_mirror("prices", self.db.read_prices())
+        after = self._row_counts(self.db.price_coverage(symbols_list))
+        return {symbol: max(0, after.get(symbol, 0) - before.get(symbol, 0)) for symbol in symbols_list}
+
+    def append_dividends(
+        self,
+        symbols: Sequence[str],
+        start: DateLike,
+        end: DateLike,
+    ) -> dict[str, int]:
+        """Fetch dividends only past the last successful refresh for each symbol."""
+        symbols_list = list(dict.fromkeys(symbols))
+        end_d = pd.Timestamp(end).date()
+        start_d = pd.Timestamp(start).date()
+        meta = self.read_meta()
+        before = self._dividend_counts(symbols_list)
+        groups: dict[date, list[str]] = {}
+        for symbol in symbols_list:
+            through = meta.get(f"dividends_through:{symbol}")
+            if through:
+                through_d = pd.Timestamp(through).date()
+                if through_d >= end_d:
+                    continue
+                fetch_start = through_d + timedelta(days=1)
+            else:
+                fetch_start = start_d
+            if fetch_start > end_d:
+                continue
+            groups.setdefault(fetch_start, []).append(symbol)
+
+        getter = getattr(self.market, "get_dividends", None)
+        if callable(getter):
+            for fetch_start, group in groups.items():
+                fresh = getter(group, start=fetch_start, end=end_d)
+                self.db.write_dividends(fresh)
+                self.mark_fetched("dividends", group)
+                self.db.write_meta({f"dividends_through:{symbol}": end_d.isoformat() for symbol in group})
+            if groups:
+                self._maybe_mirror("dividends", self.db.read_dividends())
+        after = self._dividend_counts(symbols_list)
+        return {symbol: max(0, after.get(symbol, 0) - before.get(symbol, 0)) for symbol in symbols_list}
+
+    def write_filings(self, frame: pd.DataFrame) -> None:
+        self.db.write_filings(frame)
+        self._maybe_mirror("filings", self.db.read_filings())
+
+    def read_filings(self, symbols=None, since=None, as_of=None) -> pd.DataFrame:
+        return self.db.read_filings(
+            list(symbols) if symbols is not None else None,
+            since=str(since)[:10] if since is not None else None,
+            as_of=str(as_of)[:10] if as_of is not None else None,
+        )
+
+    def write_stints(self, frame: pd.DataFrame) -> None:
+        self.db.write_stints(frame)
+        self._maybe_mirror("universe_stints", self.db.read_stints())
+
+    def read_stints(self, universe: Optional[str] = None) -> pd.DataFrame:
+        return self.db.read_stints(universe)
+
     def mark_fetched(self, table: str, symbols: Sequence[str]) -> None:
         self.db.write_meta({f"{table}_fetched:{s}": "1" for s in symbols})
 
@@ -345,6 +478,18 @@ class LocalCache:
 
     def close(self) -> None:
         self.db.close()
+
+    @staticmethod
+    def _row_counts(coverage: pd.DataFrame) -> dict[str, int]:
+        if coverage is None or coverage.empty:
+            return {}
+        return {str(row["symbol"]): int(row["n_rows"]) for _, row in coverage.iterrows()}
+
+    def _dividend_counts(self, symbols: Sequence[str]) -> dict[str, int]:
+        cached = self.db.read_dividends(list(symbols))
+        if cached.empty:
+            return {}
+        return {str(symbol): int(count) for symbol, count in cached.groupby("symbol").size().items()}
 
 
 class CacheBackedProvider(BaseDataProvider):

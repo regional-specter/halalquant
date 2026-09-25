@@ -28,12 +28,13 @@ class AbstractFetcher(BaseDataProvider, ABC):
         self.min_interval = float(min_interval or 0.0)
         self._last_request = 0.0
 
-    def _get_json(
+    def _request(
         self,
         url: str,
         params: Optional[Mapping[str, Any]] = None,
         headers: Optional[Mapping[str, str]] = None,
     ) -> Any:
+        """GET that leaves HTTP 304 (Not Modified) for the caller to handle."""
         self._throttle()
         response = self.session.get(
             url,
@@ -42,8 +43,17 @@ class AbstractFetcher(BaseDataProvider, ABC):
             timeout=self.timeout,
         )
         self._last_request = time.monotonic()
-        response.raise_for_status()
-        return response.json()
+        if response.status_code != 304:
+            response.raise_for_status()
+        return response
+
+    def _get_json(
+        self,
+        url: str,
+        params: Optional[Mapping[str, Any]] = None,
+        headers: Optional[Mapping[str, str]] = None,
+    ) -> Any:
+        return self._request(url, params=params, headers=headers).json()
 
     def _throttle(self) -> None:
         if self.min_interval <= 0:

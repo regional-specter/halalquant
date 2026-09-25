@@ -212,6 +212,113 @@ def join_income_metrics(panel: pd.DataFrame, income: pd.DataFrame) -> pd.DataFra
     return out
 
 
+def _label(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series("", index=frame.index)
+    return frame[column].fillna("").astype(str).str.strip().str.upper()
+
+
+def _is_quarter_frame(frame: pd.DataFrame) -> pd.Series:
+    form = _label(frame, "form")
+    period = _label(frame, "fiscal_period")
+    return form.isin(["10-Q", "10-Q/A"]) | period.isin(["Q1", "Q2", "Q3", "Q4"])
+
+
+def _is_annual_frame(frame: pd.DataFrame) -> pd.Series:
+    form = _label(frame, "form")
+    period = _label(frame, "fiscal_period")
+    quarter = _is_quarter_frame(frame)
+    blank = {"", "NONE", "NAN", "<NA>", "NAT"}
+    annual = form.isin(["10-K", "10-K/A"]) | period.eq("FY") | (
+        form.isin(blank) & period.isin(blank | {"FY"})
+    )
+    return annual & ~quarter
+
+
+def _usable_quarters(known: pd.DataFrame) -> pd.DataFrame:
+    """Quarter increments only. Year-to-date durations are not quarters."""
+    quarters = known.loc[_is_quarter_frame(known)].copy()
+    if quarters.empty or "period_days" not in quarters.columns:
+        return quarters
+    days = pd.to_numeric(quarters["period_days"], errors="coerce")
+    keep = days.isna() | ((days >= 70) & (days <= 120))
+    return quarters.loc[keep]
+
+
+def apply_ttm_cash_flow(panel: pd.DataFrame, income: pd.DataFrame) -> pd.DataFrame:
+    """
+    Replace snapshot FCF and revenue with a trailing four-quarter sum.
+
+    Only ~90-day increments with ``filed_date <= as_of`` are summed. A 10-Q
+    year-to-date total (``period_days`` outside 70–120) is ignored so it cannot
+    be added on top of the quarters it already contains. Fewer than four
+    quarters falls back to the latest 10-K already public on ``as_of``.
+    ``impure_ratio`` stays on that annual interest/revenue figure.
+    """
+    out = panel.copy()
+    out["fcf_basis"] = "annual"
+    if income is None or income.empty or out.empty:
+        return out
+
+    income = income.copy()
+    income["_filed"] = pd.to_datetime(income["filed_date"], errors="coerce")
+    income["_report"] = pd.to_datetime(income["report_date"], errors="coerce")
+    grouped = {symbol: frame for symbol, frame in income.groupby("symbol")}
+    purifier = Purifier()
+
+    fcfs: list = []
+    revenues: list = []
+    bases: list = []
+    impures: list = []
+    for _, row in out.iterrows():
+        choice = _ttm_choice(grouped.get(row["symbol"]), pd.Timestamp(row.get("as_of")), purifier)
+        fcf, revenue, basis, impure = choice
+        fcfs.append(row.get("free_cash_flow") if fcf is None else fcf)
+        revenues.append(row.get("total_revenue") if revenue is None else revenue)
+        bases.append(basis)
+        impures.append(row.get("impure_ratio") if impure is None else impure)
+    out["free_cash_flow"] = fcfs
+    out["total_revenue"] = revenues
+    out["fcf_basis"] = bases
+    out["impure_ratio"] = impures
+    return out
+
+
+def _ttm_choice(known: Optional[pd.DataFrame], as_of_ts: pd.Timestamp, purifier: Purifier):
+    if known is None or known.empty:
+        return None, None, "annual", None
+    known = known[known["_filed"] <= as_of_ts]
+    if known.empty:
+        return None, None, "annual", None
+
+    annual = known.loc[_is_annual_frame(known)].sort_values(["_report", "_filed"])
+    annual_fcf = annual_rev = annual_impure = None
+    if not annual.empty:
+        latest = annual.iloc[-1]
+        annual_fcf = latest.get("free_cash_flow")
+        annual_rev = latest.get("total_revenue")
+        annual_impure = purifier.impure_income_ratio(
+            latest.get("non_compliant_income"),
+            latest.get("total_revenue"),
+        )
+
+    quarters = _usable_quarters(known)
+    if not quarters.empty:
+        quarters = quarters.sort_values("_filed").groupby("_report", as_index=False).tail(1)
+        quarters = quarters.sort_values("_report")
+        if len(quarters) >= 4:
+            last4 = quarters.tail(4)
+            span = (last4["_report"].max() - last4["_report"].min()).days
+            if 240 <= span <= 380:
+                fcf = pd.to_numeric(last4["free_cash_flow"], errors="coerce").sum(min_count=1)
+                revenue = pd.to_numeric(last4["total_revenue"], errors="coerce").sum(min_count=1)
+                return fcf, revenue, "ttm", annual_impure
+
+    if annual_fcf is None and annual_rev is None:
+        return None, None, "annual", annual_impure
+    return annual_fcf, annual_rev, "annual", annual_impure
+
+
 def build_financial_metrics(
     fundamentals: pd.DataFrame,
     income: pd.DataFrame,
@@ -260,6 +367,7 @@ def build_financial_metrics(
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end)
         panel = panel[(report_ts >= start_ts) & (report_ts <= end_ts)].copy()
+        panel = panel.loc[~_is_quarter_frame(panel)].copy()
         if panel.empty:
             return empty
         panel = fill_market_caps_from_prices(panel, prices, as_of=end)
@@ -270,8 +378,16 @@ def build_financial_metrics(
     panel["cash_ratio"] = ratios["cash_ratio"].values
     panel["receivables_ratio"] = ratios["receivables_ratio"].values
     panel = join_income_metrics(panel, income)
+    if freq:
+        panel = apply_ttm_cash_flow(panel, income)
+    else:
+        panel["fcf_basis"] = "annual"
 
+    basis = panel["fcf_basis"] if "fcf_basis" in panel.columns else None
     for col in METRIC_COLUMNS:
         if col not in panel.columns:
             panel[col] = pd.NA
-    return panel[list(METRIC_COLUMNS)].reset_index(drop=True)
+    out = panel[list(METRIC_COLUMNS)].reset_index(drop=True)
+    if basis is not None:
+        out["fcf_basis"] = basis.to_numpy()
+    return out

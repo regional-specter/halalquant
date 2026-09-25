@@ -323,7 +323,51 @@ members = store.read_universe("sp500")            # sector + sector_allowed
 print(store.read_meta())
 ```
 
-Re-fetch after a 10-K season with `force_refresh=True` (CLI: `--force-refresh`).
+Re-fetch after a 10-K season with `force_refresh=True` (CLI: `--force-refresh`). That ignores cached rows and downloads again. Opening an existing `cache.duckdb` from 0.1 migrates in place: `form`, `fiscal_period`, `fcf_basis`, `period_days`, the `filings` table, and `universe_stints` are added when the file is opened, and statement tables whose primary key predates `fiscal_period` are copied forward. You do not need `--force-refresh` just to upgrade the schema. Use it when the facts themselves are stale. If a migrated file errors on read, `python -m halalquant prepare --force-refresh` rebuilds from the network.
+
+### Nightly refresh
+
+`prepare_dataset` is the cold start. After that, append through the last session:
+
+```python
+hq.refresh_dataset(as_of="today")   # or python -m halalquant refresh --as-of today
+```
+
+Refresh fills missing price windows (including **SPY** and **SPUS**, even though they are not index members), dividends past the last ex-date, and new 10-Q/10-K facts. SEC submissions are checked with a stored accession and `ETag`. Companyfacts is downloaded again only when that accession grew and the new filing is not already cached.
+
+### Filing events
+
+```python
+hq.filing_events(as_of="2026-09-25", since="2026-09-24", tickers=["AAPL", "MSFT"])
+```
+
+One row per new 10-Q/10-K: form, `filed_date`, debt/cash/receivables versus the **24-month market cap on `filed_date`**, using shares and a close that were already public that day. `tickers=None` uses the cached universe. Pass holdings when the book should not scan the whole index. The library does not sell; Monterey applies `breach_exit="next_open"`.
+
+### Coverage report
+
+```python
+detail = hq.coverage_report(start="2010-01-01")
+hq.coverage_summary(detail)
+```
+
+Data quality for a Shariah reviewer: missing FCF, impure ratio, restated 10-Ks, CIK misses, sector gaps, 20-day median dollar ADV, and names with no price history. Leavers with no Yahoo bars stay in the report (`price_missing`); they are not dropped.
+
+### Point-in-time membership and quarterly FCF
+
+```python
+hq.list_universe("sp500", as_of="2020-03-31")          # who was in on that day
+hq.list_universe("sp500", start="2010-01-01", end="2024-12-31")  # union, leavers included
+```
+
+Membership comes from Wikipedia's current list plus its **selected changes** table. That is not CRSP. A name with no recorded add date is treated as a member since 1990-01-01.
+
+Month-end metrics (`freq="ME"`) carry trailing-twelve-month free cash flow on `free_cash_flow` when four ~90-day quarters were already public (`filed_date <= as_of`). Year-to-date 10-Q durations are not added on top of those quarters. Fewer than four quarters falls back to the latest 10-K. `Lab.fcf_panel()` can keep reading `free_cash_flow`.
+
+Omitting `start` on `prepare_dataset` now begins at **2010-01-01**. Pass an explicit `start` for a shorter warm. Copy `~/.halalquant/parquet/` (or `export_parquet("prices", partition_by_year=True)`) when a notebook needs a snapshot of the cache.
+
+### Library success test
+
+`Lab.from_halalquant(...)` for 2010 through today, on a monthly FCF book, should still contain names that were in the index in 2020 and in 2022. `coverage_report` is the sheet you would show a Shariah reviewer. Run that check in Monterey after this library is installed. The nightly paper book can start from `refresh_dataset` plus `filing_events` on the current universe; the 2010 panel is for the research re-run, not for the first paper session.
 
 ---
 

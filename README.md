@@ -173,6 +173,9 @@ symbol      as_of  is_compliant  debt_ratio  cash_ratio  receivables_ratio stand
 | `get_financial_metrics()` | Ratio history, or month/quarter snapshots with `freq="ME"` / `"QE"` |
 | `purify_dividends()` | The share of each dividend to donate |
 | `prepare_dataset()` | Warm DuckDB + Parquet cache (S&P 500 or explicit tickers) |
+| `refresh_dataset()` | Append prices, dividends, and new filings through an as-of date |
+| `filing_events()` | New 10-Q/10-K rows with AAOIFI ratios on `filed_date` |
+| `coverage_report()` | Data-quality sheet (FCF, CIK, sector, ADV, missing prices) |
 
 ---
 
@@ -204,8 +207,10 @@ halalquant/
 │   │   └── _purifier.py             # Impure income ratio calculators
 │   ├── database/                    # Optional local store: pip install "halalquant[cache]"
 │   │   ├── _cache.py                # Cache-before-fetch + Parquet mirrors
-│   │   ├── _dataset.py              # prepare_dataset() — warm AAOIFI metrics DB
-│   │   ├── _universe.py             # S&P 500 constituent list
+│   │   ├── _dataset.py              # prepare_dataset() / refresh_dataset()
+│   │   ├── _events.py               # filing_events() — 10-Q/10-K AAOIFI feed
+│   │   ├── _coverage.py             # coverage_report() — data quality
+│   │   ├── _universe.py             # S&P 500 list and point-in-time stints
 │   │   ├── _duckdb_driver.py        # Vectorized local SQL query engine
 │   │   └── _models.py               # Database schemas (prices, statements, metrics)
 │   └── utils/                       # Shared helpers
@@ -578,13 +583,23 @@ def test_evaluate_arrays_pass_and_fail():
 
 - [x] First tagged `v0.1.0` release
 
+### As-of facts (0.3)
+
+- [x] `refresh_dataset()` appends prices, dividends, and new 10-Q/10-K facts
+- [x] `filing_events()` — AAOIFI ratios versus 24-month cap on `filed_date`
+- [x] `coverage_report()` — FCF, impure ratio, restatements, CIK, sector, ADV
+- [x] Quarterly point-in-time FCF (four quarter increments, else the latest 10-K)
+- [x] Point-in-time S&P 500 membership from Wikipedia selected changes
+
 ---
 
 ## What's Next
 
-`v0.1.0` is tagged. Non-US issuers use Yahoo annual statements (90-day publication lag instead of a true `filed_date`). SEC remains the PIT source for US CIKs.
+`0.3.0` is the as-of facts layer for a paper book. Non-US issuers still use Yahoo annual statements (90-day publication lag instead of a true `filed_date`). SEC remains the PIT source for US CIKs.
 
-Research notebooks should call `hq.prepare_dataset()` once (or `python -m halalquant prepare`) and then pass `cache=True` so SEC / Yahoo are not hit on every re-run. See [USAGE.md §8](USAGE.md#8-prepare_dataset--warm-aaoifi-metrics-db).
+Nightly jobs call `hq.refresh_dataset(as_of="today")` and `hq.filing_events(...)`. Research that needs 2010–today calls `hq.prepare_dataset(start="2010-01-01")` once, then `cache=True`. See [USAGE.md §8](USAGE.md#8-prepare_dataset--warm-aaoifi-metrics-db).
+
+This library does not place orders or build target weights. Those stay in Monterey.
 
 Track the plain-English checklist in [`main.todo`](main.todo).
 

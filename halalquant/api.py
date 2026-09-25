@@ -9,7 +9,9 @@ import pandas as pd
 
 from halalquant.base import METRIC_COLUMNS, BaseDataProvider, BaseScreener
 from halalquant.database._cache import CacheBackedProvider, CacheLike, LocalCache, resolve_cache
-from halalquant.database._dataset import prepare_dataset
+from halalquant.database._coverage import coverage_report, coverage_summary
+from halalquant.database._dataset import prepare_dataset, refresh_dataset
+from halalquant.database._events import filing_events
 from halalquant.providers._filings import FilingsProvider
 from halalquant.providers._yfinance import YFinanceProvider
 from halalquant.purification._purifier import Purifier
@@ -153,7 +155,7 @@ def get_financial_metrics(
             store.write_metrics(panel, freq=freq_key)
         combined = store.read_metrics(symbols, start=start_date, end=end_date, freq=freq_key)
         return _metrics_view(combined)
-    return panel.reset_index(drop=True)
+    return _metrics_view(panel)
 
 
 def purify_dividends(

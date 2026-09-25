@@ -84,3 +84,13 @@
 [x] Wire the optional local cache into the public API (`cache=True` / prepare_dataset).
 [x] Map bank and insurer XBRL tags so financial ratios are not empty without a sector filter.
 [x] Tighten purification so dividends use the latest income statement known on the ex-date.
+
+## 13. As-of facts for the shadow fund
+[x] Add refresh_dataset so a nightly job appends prices, dividends, and new filings.
+[x] Always refresh SPY and SPUS prices with the book.
+[x] Re-download companyfacts only when the SEC submissions accession changed.
+[x] Add filing_events with AAOIFI ratios versus the 24-month cap on filed_date.
+[x] Add a coverage report for missing FCF, impure income, restatements, CIK, sector, and ADV.
+[x] Keep 10-Q cash flow as quarter increments and put TTM FCF on month-end snapshots.
+[x] Store Wikipedia S&P 500 stints and list the index as of a date.
+[x] Migrate a 0.1 DuckDB file in place when it is opened.
