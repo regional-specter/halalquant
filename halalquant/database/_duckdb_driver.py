@@ -16,6 +16,7 @@ from halalquant.database._models import (
     FILING_TABLE_COLUMNS,
     INCOME_DDL,
     INCOME_TABLE_COLUMNS,
+    METRICS_DDL,
     METRICS_TABLE_COLUMNS,
     MIGRATION_SQL,
     PRICE_TABLE_COLUMNS,
@@ -64,25 +65,41 @@ class DuckDBDriver:
         )
 
     def _ensure_metrics_primary_key(self) -> None:
-        """Keep restated 10-K comparatives: PK must include report_date."""
-        rows = self.con.execute(
-            """
-            SELECT constraint_column_names
-            FROM duckdb_constraints()
-            WHERE table_name = 'financial_metrics' AND constraint_type = 'PRIMARY KEY'
-            """
-        ).fetchall()
-        cols: list[str] = []
-        if rows:
-            raw = rows[0][0]
-            if isinstance(raw, (list, tuple)):
-                cols = [str(c).lower() for c in raw]
-            else:
-                cols = [part.strip().lower() for part in str(raw).strip("[]").split(",")]
-        if "report_date" in cols:
+        """One metrics row per (symbol, as_of, freq). A later filing replaces the old one."""
+        pk = set(self._pk_columns("financial_metrics"))
+        if pk == {"symbol", "as_of", "freq"}:
             return
-        self.con.execute("DROP TABLE IF EXISTS financial_metrics")
-        self.con.execute(SCHEMA_SQL)
+        legacy = "_financial_metrics_legacy"
+        self.con.execute(f"ALTER TABLE financial_metrics RENAME TO {legacy}")
+        self.con.execute(METRICS_DDL)
+        info = self.con.execute(f"PRAGMA table_info('{legacy}')").fetchdf()
+        legacy_cols = {str(name).lower() for name in info["name"]}
+        select_bits: list[str] = []
+        for col in METRICS_TABLE_COLUMNS:
+            if col in legacy_cols:
+                select_bits.append(col)
+            else:
+                select_bits.append(f"NULL AS {col}")
+        order_filed = "filed_date" if "filed_date" in legacy_cols else "NULL"
+        order_report = "report_date" if "report_date" in legacy_cols else "NULL"
+        cols_sql = ", ".join(METRICS_TABLE_COLUMNS)
+        self.con.execute(
+            f"""
+            INSERT INTO financial_metrics ({cols_sql})
+            SELECT {", ".join(select_bits)}
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY symbol, as_of, freq
+                        ORDER BY {order_filed} DESC NULLS LAST,
+                                 {order_report} DESC NULLS LAST
+                    ) AS _hq_rn
+                FROM {legacy}
+            )
+            WHERE _hq_rn = 1
+            """
+        )
+        self.con.execute(f"DROP TABLE {legacy}")
 
     def _pk_columns(self, table: str) -> list[str]:
         rows = self.con.execute(
@@ -234,7 +251,7 @@ class DuckDBDriver:
     def write_metrics(self, frame: pd.DataFrame) -> None:
         self._insert(
             "financial_metrics",
-            frame,
+            _dedupe_metric_rows(frame),
             METRICS_TABLE_COLUMNS,
             date_cols=("as_of", "report_date", "filed_date"),
         )
@@ -434,6 +451,30 @@ class DuckDBDriver:
         placeholders = ", ".join(["?"] * len(values))
         params.extend(values)
         return f"{column} IN ({placeholders})"
+
+
+def _dedupe_metric_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Keep the latest filing when a snapshot is written twice."""
+    if frame is None or frame.empty:
+        return frame
+    if not {"symbol", "as_of"}.issubset(frame.columns):
+        return frame
+    work = frame.copy()
+    if "freq" not in work.columns:
+        work["freq"] = ""
+    work["_filed_sort"] = (
+        pd.to_datetime(work["filed_date"], errors="coerce")
+        if "filed_date" in work.columns
+        else pd.NaT
+    )
+    work["_report_sort"] = (
+        pd.to_datetime(work["report_date"], errors="coerce")
+        if "report_date" in work.columns
+        else pd.NaT
+    )
+    work = work.sort_values(["_filed_sort", "_report_sort"], na_position="first")
+    work = work.drop_duplicates(["symbol", "as_of", "freq"], keep="last")
+    return work.drop(columns=["_filed_sort", "_report_sort"])
 
 
 def _align_frame(

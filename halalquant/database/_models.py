@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS financial_metrics (
     capital_expenditure DOUBLE,
     free_cash_flow DOUBLE,
     fcf_basis VARCHAR,
-    PRIMARY KEY (symbol, as_of, freq, report_date)
+    PRIMARY KEY (symbol, as_of, freq)
 );
 
 CREATE TABLE IF NOT EXISTS filings (
@@ -168,6 +168,35 @@ CREATE TABLE IF NOT EXISTS balance_sheets (
     shares_outstanding DOUBLE,
     form VARCHAR,
     PRIMARY KEY (symbol, report_date, filed_date, fiscal_period)
+);
+"""
+
+METRICS_DDL = """
+CREATE TABLE IF NOT EXISTS financial_metrics (
+    symbol VARCHAR NOT NULL,
+    as_of DATE NOT NULL,
+    freq VARCHAR NOT NULL,
+    report_date DATE,
+    filed_date DATE,
+    total_debt DOUBLE,
+    cash_and_equiv DOUBLE,
+    interest_bearing_securities DOUBLE,
+    receivables DOUBLE,
+    liquid_assets DOUBLE,
+    market_cap DOUBLE,
+    market_cap_24m DOUBLE,
+    debt_ratio DOUBLE,
+    cash_ratio DOUBLE,
+    receivables_ratio DOUBLE,
+    total_revenue DOUBLE,
+    non_compliant_income DOUBLE,
+    impure_ratio DOUBLE,
+    ebitda DOUBLE,
+    operating_cash_flow DOUBLE,
+    capital_expenditure DOUBLE,
+    free_cash_flow DOUBLE,
+    fcf_basis VARCHAR,
+    PRIMARY KEY (symbol, as_of, freq)
 );
 """
 

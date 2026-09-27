@@ -172,6 +172,34 @@ def test_public_metrics_hide_fcf_basis(store: LocalCache) -> None:
     assert list(frame.columns) == list(METRIC_COLUMNS)
 
 
+def test_second_rebuild_does_not_duplicate_metrics(store: LocalCache) -> None:
+    fake = store.market
+    hq.prepare_dataset(
+        tickers=["AAA"],
+        start="2024-01-02",
+        end="2024-06-28",
+        freq="ME",
+        cache=store,
+        provider=fake,
+        filings=fake,
+        apply_sector_filter=False,
+        progress=False,
+    )
+    before = _metric_count(store)
+    from halalquant.database._dataset import rebuild_metric_panels
+
+    rebuild_metric_panels(
+        cache=store,
+        start="2024-01-02",
+        end="2024-06-28",
+        freq="ME",
+        progress=False,
+    )
+    after = _metric_count(store)
+    assert after == before
+    assert _duplicate_metric_keys(store) == 0
+
+
 def test_price_gap_windows_keep_the_open_end_and_skip_a_long_weekend() -> None:
     dates = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 8)]
     windows = price_gap_windows(dates, date(2024, 1, 2), date(2024, 1, 10))
@@ -516,6 +544,25 @@ def test_unchanged_accession_does_not_redownload_facts(store: LocalCache) -> Non
     changed_again, _ = _filings_needing_facts(store, ["AAA"], lambda _msg: None)
     assert changed_again == []
     assert stub.calls == 2
+
+
+def _metric_count(store: LocalCache) -> int:
+    return int(store.db.con.execute("SELECT COUNT(*) FROM financial_metrics").fetchone()[0])
+
+
+def _duplicate_metric_keys(store: LocalCache) -> int:
+    return int(
+        store.db.con.execute(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT symbol, as_of, freq
+                FROM financial_metrics
+                GROUP BY 1, 2, 3
+                HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()[0]
+    )
 
 
 def _quarter(symbol, report, filed, period, fcf, days) -> dict:

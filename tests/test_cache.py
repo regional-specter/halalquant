@@ -272,17 +272,28 @@ def test_fill_market_caps_uses_shares_and_trailing_close() -> None:
     assert float(out.iloc[0]["market_cap_24m"]) == pytest.approx(90.0)
 
 
-def test_annual_metrics_keep_restated_comparatives(store: LocalCache) -> None:
-    frame = pd.DataFrame(
+def test_metrics_upsert_replaces_same_snapshot(store: LocalCache) -> None:
+    first = pd.DataFrame(
         {
-            "symbol": ["AAA", "AAA"],
-            "as_of": [date(2023, 11, 3), date(2023, 11, 3)],
-            "report_date": [date(2022, 9, 24), date(2023, 9, 30)],
-            "filed_date": [date(2023, 11, 3), date(2023, 11, 3)],
-            "debt_ratio": [0.04, 0.03],
+            "symbol": ["AAA"],
+            "as_of": [date(2024, 5, 31)],
+            "report_date": [date(2023, 12, 31)],
+            "filed_date": [date(2024, 2, 15)],
+            "debt_ratio": [0.04],
         }
     )
-    store.write_metrics(frame, freq="annual")
-    out = store.read_metrics(["AAA"], freq="annual")
-    assert len(out) == 2
-    assert set(pd.to_datetime(out["report_date"]).dt.date) == {date(2022, 9, 24), date(2023, 9, 30)}
+    store.write_metrics(first, freq="ME")
+    second = pd.DataFrame(
+        {
+            "symbol": ["AAA"],
+            "as_of": [date(2024, 5, 31)],
+            "report_date": [date(2024, 3, 31)],
+            "filed_date": [date(2024, 5, 2)],
+            "debt_ratio": [0.09],
+        }
+    )
+    store.write_metrics(second, freq="ME")
+    out = store.read_metrics(["AAA"], freq="ME")
+    assert len(out) == 1
+    assert pd.Timestamp(out.iloc[0]["report_date"]).date() == date(2024, 3, 31)
+    assert float(out.iloc[0]["debt_ratio"]) == pytest.approx(0.09)
