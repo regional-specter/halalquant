@@ -464,6 +464,37 @@ class LocalCache:
     def read_stints(self, universe: Optional[str] = None) -> pd.DataFrame:
         return self.db.read_stints(universe)
 
+    def replace_stints(self, frame: pd.DataFrame, universe: str = "sp500") -> None:
+        self.db.replace_stints(frame, universe)
+        self._maybe_mirror("universe_stints", self.db.read_stints())
+
+    def members_as_of(self, as_of, universe: str = "sp500") -> pd.DataFrame:
+        """
+        Index members on ``as_of`` with sector labels and the activity screen.
+
+        Uses cached stints. Falls back to the current member table (flagged
+        ``pit=False``) when no stints are cached.
+        """
+        from halalquant.database._universe import members_as_of
+        from halalquant.screening._sector_filter import SectorFilter
+
+        stints = self.read_stints(universe)
+        if stints is not None and not stints.empty:
+            members = members_as_of(stints, as_of)[["symbol"]].copy()
+            pit = True
+        else:
+            members = self.read_universe(universe)[["symbol"]].copy()
+            pit = False
+        sectors = self.db.read_sector_map(list(members["symbol"]))
+        sector_filter = SectorFilter()
+        members["sector"] = members["symbol"].map(sectors)
+        members["sector_allowed"] = [
+            isinstance(sector, str) and bool(sector) and sector_filter.is_sector_allowed(sector)
+            for sector in members["sector"]
+        ]
+        members["pit"] = pit
+        return members.reset_index(drop=True)
+
     def mark_fetched(self, table: str, symbols: Sequence[str]) -> None:
         self.db.write_meta({f"{table}_fetched:{s}": "1" for s in symbols})
 

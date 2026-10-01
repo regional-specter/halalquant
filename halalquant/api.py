@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Optional, Sequence, Union
 
+import numpy as np
 import pandas as pd
 
 from halalquant.base import METRIC_COLUMNS, BaseDataProvider, BaseScreener
@@ -74,6 +75,98 @@ def get_halal_universe(
         cache=cache,
     )
     return _screener_for(standard).evaluate_compliance(fundamentals)
+
+
+def halal_universe(
+    as_of: Optional[DateLikeInput] = None,
+    standard: str = "aaoifi",
+    universe: str = "sp500",
+    cache: CacheLike = True,
+    freq: str = "ME",
+    debt_threshold: Optional[float] = None,
+    cash_threshold: Optional[float] = None,
+    receivables_threshold: Optional[float] = None,
+) -> pd.DataFrame:
+    """
+    Point-in-time index members with the activity and ratio screens together.
+
+    Reads the prepared cache only (no network). One row per member on
+    ``as_of``. ``is_compliant`` is True only when the sector is known and
+    allowed and the latest metrics snapshot on or before ``as_of`` passes the
+    ratio screen. ``reason`` says which test failed first.
+    """
+    store = resolve_cache(cache) or LocalCache()
+    day = pd.Timestamp(as_of or date.today()).date()
+    members = store.members_as_of(day, universe)
+    columns = [
+        "symbol",
+        "sector",
+        "sector_allowed",
+        "market_cap",
+        "debt_ratio",
+        "cash_ratio",
+        "receivables_ratio",
+        "financial_pass",
+        "is_compliant",
+        "reason",
+        "metrics_as_of",
+        "pit",
+    ]
+    if members.empty:
+        return pd.DataFrame(columns=columns)
+
+    metrics = store.db.read_metrics(list(members["symbol"]), end=day.isoformat(), freq=freq)
+    snap = pd.DataFrame()
+    stamp = None
+    if metrics is not None and not metrics.empty:
+        stamps = pd.to_datetime(metrics["as_of"]).dt.date
+        stamp = stamps.max()
+        snap = metrics.loc[stamps == stamp].copy()
+    if standard.strip().lower() == "aaoifi":
+        kwargs = {
+            key: value
+            for key, value in (
+                ("debt_threshold", debt_threshold),
+                ("cash_threshold", cash_threshold),
+                ("receivables_threshold", receivables_threshold),
+            )
+            if value is not None
+        }
+        screener: BaseScreener = AAOIFIScreener(**kwargs)
+    else:
+        screener = _screener_for(standard)
+
+    out = members.copy()
+    if snap.empty:
+        for column in ("market_cap", "debt_ratio", "cash_ratio", "receivables_ratio"):
+            out[column] = np.nan
+        out["financial_pass"] = False
+        ratio_reason = pd.Series("no AAOIFI metrics", index=out.index)
+    else:
+        if "report_date" not in snap.columns:
+            snap["report_date"] = snap["as_of"]
+        verdict = screener.evaluate_compliance(snap)[
+            ["symbol", "is_compliant", "debt_ratio", "cash_ratio", "receivables_ratio", "reason"]
+        ].rename(columns={"is_compliant": "financial_pass", "reason": "ratio_reason"})
+        verdict = verdict.drop_duplicates("symbol", keep="last")
+        caps = snap.drop_duplicates("symbol", keep="last").set_index("symbol")["market_cap"]
+        out = out.merge(verdict, on="symbol", how="left")
+        out["market_cap"] = out["symbol"].map(caps)
+        out["financial_pass"] = out["financial_pass"].fillna(False).astype(bool)
+        ratio_reason = out.pop("ratio_reason").fillna("no AAOIFI metrics")
+
+    reasons = []
+    for i, row in out.iterrows():
+        if not isinstance(row["sector"], str) or not row["sector"]:
+            reasons.append("missing sector label")
+        elif not row["sector_allowed"]:
+            reasons.append(f"excluded activity: {row['sector']}")
+        else:
+            reasons.append(str(ratio_reason.loc[i]))
+    out["reason"] = reasons
+    out["is_compliant"] = out["sector_allowed"].astype(bool) & out["financial_pass"]
+    out["metrics_as_of"] = stamp
+    return out[columns].sort_values("symbol").reset_index(drop=True)
 
 
 def compare_standards(

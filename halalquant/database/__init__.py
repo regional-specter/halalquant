@@ -10,17 +10,35 @@ from halalquant.database._cache import (
     resolve_cache,
 )
 from halalquant.database._coverage import coverage_report, coverage_summary
-from halalquant.database._dataset import prepare_dataset, refresh_dataset
+from halalquant.database._dataset import backfill_universe, prepare_dataset, refresh_dataset
 from halalquant.database._duckdb_driver import DuckDBDriver
 from halalquant.database._events import filing_events
 from halalquant.database._models import SCHEMA_SQL
-from halalquant.database._universe import list_universe, sp500_constituents, yahoo_symbol
+from halalquant.database._quality import dividend_quality, impure_ratio_flags
+from halalquant.database._universe import (
+    TICKER_RENAMES,
+    list_universe,
+    members_as_of,
+    sp500_constituents,
+    sp500_history,
+    sp500_stints,
+    stints_from_snapshots,
+    yahoo_symbol,
+)
 
 __all__ = [
     "CacheBackedProvider",
     "DuckDBDriver",
     "LocalCache",
     "SCHEMA_SQL",
+    "TICKER_RENAMES",
+    "backfill_universe",
+    "dividend_quality",
+    "impure_ratio_flags",
+    "members_as_of",
+    "sp500_history",
+    "sp500_stints",
+    "stints_from_snapshots",
     "default_cache_path",
     "default_data_dir",
     "default_facts_dir",

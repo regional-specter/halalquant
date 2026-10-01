@@ -103,7 +103,7 @@ def prepare_dataset(
         symbols = list(current_symbols)
         stints = _load_stints(universe, log)
         if not stints.empty:
-            store.write_stints(stints)
+            store.replace_stints(stints, "sp500")
             window = members_between(stints, start_date, end_date)
             symbols = validate_symbols(list(dict.fromkeys([*current_symbols, *window["symbol"].astype(str)])))
             for _, row in window.iterrows():
@@ -114,7 +114,7 @@ def prepare_dataset(
                         sector_map[symbol] = mapped
             log(
                 f"Point-in-time {universe} window {start_date} → {end_date}: "
-                f"{len(symbols)} names (Wikipedia selected changes, not CRSP)"
+                f"{len(symbols)} names (daily constituent history, not CRSP)"
             )
     else:
         universe = "custom"
@@ -218,6 +218,7 @@ def rebuild_metric_panels(
     if members.empty:
         raise ValueError("No universe in the cache. Run prepare_dataset first.")
     work = list(members.loc[members["sector_allowed"], "symbol"])
+    work = list(dict.fromkeys([*work, *_window_allowed(store, start_date, end_date)]))
     log(f"Rebuilding metrics for {len(work)} cached names…")
     balance = store.get_balance_sheet(work, as_of=None, force_refresh=False)
     income = store.get_income_statement(work, as_of=None, force_refresh=False)
@@ -298,7 +299,7 @@ def _meta(
         "n_symbols": str(len(symbols)),
         "cache_path": str(default_cache_path()),
         "prepared_at": date.today().isoformat(),
-        "schema_version": "0.3",
+        "schema_version": "0.4",
     }
 
 
@@ -378,6 +379,7 @@ def refresh_dataset(
 
     if tickers is None:
         symbols = _refresh_live_symbols(store, universe, apply_sector_filter, log)
+        _refresh_stints(store, universe, log)
     else:
         universe = "custom"
         symbols = validate_symbols(tickers)
@@ -426,7 +428,6 @@ def refresh_dataset(
         {
             **_meta(universe, history_start, as_of_date, snapshot, symbols),
             "refreshed_at": date.today().isoformat(),
-            "schema_version": "0.3",
         }
     )
     rows = []
@@ -469,6 +470,110 @@ def _load_stints(universe: str, log: ProgressFn) -> pd.DataFrame:
     except (OSError, ValueError) as exc:
         log(f"Point-in-time membership unavailable ({exc}); using the current list.")
         return pd.DataFrame()
+
+
+def _refresh_stints(store: LocalCache, universe: str, log: ProgressFn) -> None:
+    """Re-download membership once a week. A failed download keeps the cached stints."""
+    meta = store.read_meta()
+    stamp = meta.get(f"stints_at:{universe}")
+    if stamp and not store.read_stints(universe).empty:
+        try:
+            if (date.today() - pd.Timestamp(stamp).date()).days < 7:
+                return
+        except (TypeError, ValueError):
+            pass
+    stints = _load_stints(universe, log)
+    if stints.empty:
+        return
+    store.replace_stints(stints, universe)
+    store.write_meta({f"stints_at:{universe}": date.today().isoformat()})
+    log(f"Stored {len(stints)} {universe} membership stints.")
+
+
+def _window_allowed(store: LocalCache, start: date, end: date, universe: str = "sp500") -> list[str]:
+    stints = store.read_stints(universe)
+    if stints is None or stints.empty:
+        return []
+    window = members_between(stints, start, end)
+    sectors = store.db.read_sector_map(list(window["symbol"]))
+    sector_filter = SectorFilter()
+    return [
+        str(symbol)
+        for symbol in window["symbol"]
+        if sectors.get(str(symbol)) and sector_filter.is_sector_allowed(sectors[str(symbol)])
+    ]
+
+
+def backfill_universe(
+    start: Optional[DateLike] = None,
+    end: Optional[DateLike] = None,
+    universe: str = "sp500",
+    freq: Optional[str] = "ME",
+    cache: Union[bool, str, LocalCache] = True,
+    provider: Optional[BaseDataProvider] = None,
+    filings: Optional[BaseDataProvider] = None,
+    progress: Union[bool, ProgressFn] = True,
+) -> pd.DataFrame:
+    """
+    Fetch facts for index members in ``[start, end]`` that the cache lacks.
+
+    Use after ``prepare_dataset`` ran on the current list only. Leavers that
+    no longer trade often have no Yahoo prices and no SEC ticker mapping; the
+    summary shows which names are still empty.
+    """
+    log = _progress_logger(progress)
+    start_date, end_date = validate_date_range(start, end)
+    store = resolve_cache(cache, provider=provider, filings=filings)
+    if store is None:
+        store = LocalCache(provider=provider, filings=filings)
+    stints = _load_stints(universe, log)
+    if stints.empty:
+        stints = store.read_stints(universe)
+    else:
+        store.replace_stints(stints, universe)
+        store.write_meta({f"stints_at:{universe}": date.today().isoformat()})
+    if stints is None or stints.empty:
+        raise ValueError("No membership stints. Check network access to the constituent history.")
+    window = members_between(stints, start_date, end_date)
+    symbols = validate_symbols(list(window["symbol"].astype(str)))
+    priced = set(store.db.read_price_dates(symbols)["symbol"].astype(str))
+    missing = [s for s in symbols if s not in priced]
+    log(f"{len(symbols)} {universe} members in window, {len(missing)} without cached prices")
+
+    known = store.db.read_sector_map(symbols)
+    unlabeled = [s for s in symbols if not known.get(s)]
+    if unlabeled:
+        log(f"Filling {len(unlabeled)} sector labels from Yahoo…")
+        labels = store.get_sector_map(unlabeled, force_refresh=False)
+        if labels:
+            store.db.write_sector_map(labels)
+    allowed = set(_window_allowed(store, start_date, end_date, universe))
+    work = [s for s in missing if s in allowed]
+    log(f"{len(work)} missing names pass the activity screen")
+    if work:
+        price_start = (pd.Timestamp(start_date) - pd.Timedelta(days=lookback().days)).date()
+        store.get_prices(work, start=price_start, end=end_date, force_refresh=False)
+        _chunked_fetch(work, 25, "filings", log, lambda chunk: store.get_balance_sheet(chunk, as_of=None, force_refresh=False))
+        _chunked_fetch(work, 25, "income", log, lambda chunk: store.get_income_statement(chunk, as_of=None, force_refresh=False))
+        _chunked_fetch(
+            work,
+            40,
+            "dividends",
+            log,
+            lambda chunk: store.get_dividends(chunk, start=start_date, end=end_date, force_refresh=False),
+        )
+        index_cached_filings(store, work)
+        balance = store.get_balance_sheet(work, as_of=None, force_refresh=False)
+        income = store.get_income_statement(work, as_of=None, force_refresh=False)
+        if not balance.empty:
+            px_start, px_end = price_window_for_fundamentals(balance, as_of=end_date)
+            prices = store.get_prices(work, start=px_start, end=px_end, force_refresh=False)
+            _write_metric_panels(store, balance, income, prices, start_date, end_date, freq, log)
+
+    rows = pd.DataFrame({"universe": universe, "symbol": symbols})
+    rows["sector"] = rows["symbol"].map(store.db.read_sector_map(symbols))
+    rows["sector_allowed"] = rows["symbol"].isin(allowed)
+    return _summary_frame(rows, store)
 
 
 def _history_start(start: Optional[DateLike], meta: dict, as_of_date: date) -> date:

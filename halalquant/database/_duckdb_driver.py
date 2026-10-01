@@ -405,6 +405,10 @@ class DuckDBDriver:
             params.append(universe)
         return self._select("universe_stints", clauses, params, "universe, symbol, start_date")
 
+    def replace_stints(self, frame: pd.DataFrame, universe: str) -> None:
+        self.con.execute("DELETE FROM universe_stints WHERE universe = ?", [universe])
+        self.write_stints(frame)
+
     def replace_universe(self, frame: pd.DataFrame, universe: str) -> None:
         self.con.execute("DELETE FROM universe_members WHERE universe = ?", [universe])
         self.write_universe(frame)

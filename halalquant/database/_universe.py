@@ -6,7 +6,7 @@ from datetime import date
 from io import StringIO
 from typing import Optional, Union
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pandas as pd
 
@@ -20,6 +20,49 @@ _SP500_CSV_URLS = (
     "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv",
 )
 _SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+# Daily constituent lists since 1996 (date, comma-separated tickers as they traded then).
+_SP500_HISTORY_URLS = (
+    "https://raw.githubusercontent.com/fja05680/sp500/master/"
+    "S%26P%20500%20Historical%20Components%20%26%20Changes%20(Updated).csv",
+    "https://raw.githubusercontent.com/fja05680/sp500/master/"
+    "S%26P%20500%20Historical%20Components%20%26%20Changes.csv",
+)
+# Wikipedia and some CDNs return 403 to the default urllib / pandas agent.
+_USER_AGENT = "halalquant/0.4 (point-in-time universe; +https://github.com/regional-specter/halalquant)"
+
+# Old index ticker -> the Yahoo ticker that carries the same company's history today.
+TICKER_RENAMES: dict[str, str] = {
+    "FB": "META",
+    "ANTM": "ELV",
+    "ABC": "COR",
+    "BLL": "BALL",
+    "COG": "CTRA",
+    "FLT": "CPAY",
+    "RE": "EG",
+    "PKI": "RVTY",
+    "WLTW": "WTW",
+    "NLOK": "GEN",
+    "PEAK": "DOC",
+    "BK": "BNY",
+    "SQ": "XYZ",
+    "PARA": "PSKY",
+    "VIAC": "PSKY",
+    "FI": "FISV",
+    "MMC": "MRSH",
+    "DISCA": "WBD",
+    "CTL": "LUMN",
+    "HFC": "DINO",
+    "FBHS": "FBIN",
+    "ADS": "BFH",
+    "UTX": "RTX",
+    "CDAY": "DAY",
+    "BHGE": "BKR",
+    "JEC": "J",
+    "HRS": "LHX",
+    "TMK": "GL",
+    "LB": "BBWI",
+    "SATS": "ECHO",
+}
 
 
 def list_universe(
@@ -68,7 +111,7 @@ def sp500_constituents() -> pd.DataFrame:
         except (OSError, URLError, ValueError) as exc:
             errors.append(f"{url}: {exc}")
     try:
-        tables = pd.read_html(_SP500_WIKI_URL)
+        tables = _read_html_url(_SP500_WIKI_URL)
     except (OSError, URLError, ValueError, ImportError) as exc:
         errors.append(f"wikipedia: {exc}")
         tables = []
@@ -90,10 +133,18 @@ def yahoo_symbol(symbol: str) -> str:
     return str(symbol).strip().upper().replace(".", "-")
 
 
+def _fetch_text(url: str, timeout: float = 30.0) -> str:
+    request = Request(url, headers={"User-Agent": _USER_AGENT})
+    with urlopen(request, timeout=timeout) as response:  # noqa: S310 — fixed public URLs
+        return response.read().decode("utf-8")
+
+
 def _read_csv_url(url: str, timeout: float = 30.0) -> pd.DataFrame:
-    with urlopen(url, timeout=timeout) as response:  # noqa: S310 — fixed public CSV
-        payload = response.read().decode("utf-8")
-    return pd.read_csv(StringIO(payload))
+    return pd.read_csv(StringIO(_fetch_text(url, timeout)))
+
+
+def _read_html_url(url: str, timeout: float = 30.0) -> list[pd.DataFrame]:
+    return pd.read_html(StringIO(_fetch_text(url, timeout)))
 
 
 def _normalize_sp500(frame: pd.DataFrame) -> pd.DataFrame:
@@ -136,7 +187,7 @@ def sp500_changes() -> pd.DataFrame:
     "selected changes" table, not a complete constituent history.
     """
     try:
-        tables = pd.read_html(_SP500_WIKI_URL)
+        tables = _read_html_url(_SP500_WIKI_URL)
     except (OSError, URLError, ValueError, ImportError) as exc:
         raise ValueError(f"Could not download S&P 500 changes: {exc}") from exc
     for table in tables:
@@ -146,9 +197,110 @@ def sp500_changes() -> pd.DataFrame:
     return pd.DataFrame(columns=["date", "added_symbol", "removed_symbol"])
 
 
+def sp500_history() -> pd.DataFrame:
+    """
+    Daily S&P 500 constituent lists (fja05680/sp500 on GitHub).
+
+    Columns: ``date`` and ``tickers`` (comma-separated, as traded on that day).
+    Each row holds from its date until the next row.
+    """
+    errors: list[str] = []
+    for url in _SP500_HISTORY_URLS:
+        try:
+            frame = _read_csv_url(url, timeout=60.0)
+        except (OSError, URLError, ValueError) as exc:
+            errors.append(f"{url}: {exc}")
+            continue
+        if {"date", "tickers"} <= set(frame.columns) and not frame.empty:
+            frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+            return frame.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    raise ValueError("Could not download S&P 500 history. " + "; ".join(errors))
+
+
 def sp500_stints() -> pd.DataFrame:
-    """One row per membership stint. ``end_date`` is null while the name is still in."""
-    return stints_from_changes(sp500_constituents(), sp500_changes())
+    """
+    One row per membership stint. ``end_date`` is null while the name is still in.
+
+    Uses the daily constituent history when it downloads, and falls back to
+    Wikipedia's selected changes table.
+    """
+    current = sp500_constituents()
+    try:
+        return stints_from_snapshots(sp500_history(), current)
+    except ValueError:
+        return stints_from_changes(current, sp500_changes())
+
+
+def stints_from_snapshots(
+    history: pd.DataFrame,
+    current: pd.DataFrame,
+    renames: Optional[dict[str, str]] = None,
+    today: Optional[date] = None,
+) -> pd.DataFrame:
+    """
+    Build ``[start_date, end_date)`` stints from dated constituent lists.
+
+    Old tickers map onto the Yahoo ticker that carries the history today
+    (``FB`` → ``META``). ``source_symbols`` keeps the tickers seen in the file.
+    Names in ``current`` but not in the last list joined after it; names in the
+    last list but not in ``current`` left on ``today``.
+    """
+    renames = TICKER_RENAMES if renames is None else renames
+    today = today or date.today()
+    current = current.copy()
+    current["symbol"] = current["symbol"].map(yahoo_symbol)
+    meta = current.drop_duplicates("symbol").set_index("symbol")
+    current_syms = set(meta.index)
+
+    snaps: list[tuple[date, set[str]]] = []
+    for _, row in history.sort_values("date").iterrows():
+        tickers = {_clean_symbol(t) for t in str(row["tickers"]).split(",")}
+        snaps.append((pd.Timestamp(row["date"]).date(), {t for t in tickers if t}))
+    if not snaps:
+        return stints_from_changes(current, pd.DataFrame())
+    last_day = snaps[-1][0]
+    after_last = last_day + pd.Timedelta(days=1).to_pytimedelta()
+    if today > last_day:
+        mapped_last = {renames.get(t, t) for t in snaps[-1][1]}
+        if mapped_last != current_syms:
+            snaps.append((min(after_last, today), set(current_syms)))
+
+    spans: dict[str, list[tuple[date, Optional[date]]]] = {}
+    sources: dict[str, set[str]] = {}
+    open_since: dict[str, date] = {}
+    previous: set[str] = set()
+    for day, raw in snaps:
+        members = set()
+        for ticker in raw:
+            mapped = renames.get(ticker, ticker)
+            members.add(mapped)
+            sources.setdefault(mapped, set()).add(ticker)
+        for symbol in members - previous:
+            open_since[symbol] = day
+        for symbol in previous - members:
+            spans.setdefault(symbol, []).append((open_since.pop(symbol), day))
+        previous = members
+    for symbol, start in open_since.items():
+        stop = None if symbol in current_syms else today
+        spans.setdefault(symbol, []).append((start, stop))
+
+    rows: list[dict] = []
+    for symbol in sorted(spans):
+        info = meta.loc[symbol] if symbol in meta.index else None
+        for start, stop in _merge_stints(spans[symbol]):
+            rows.append(
+                {
+                    "universe": "sp500",
+                    "symbol": symbol,
+                    "start_date": start,
+                    "end_date": stop,
+                    "name": None if info is None else info.get("name"),
+                    "sector": None if info is None else info.get("sector"),
+                    "industry": None if info is None else info.get("industry"),
+                    "source_symbols": ",".join(sorted(sources.get(symbol, {symbol}))),
+                }
+            )
+    return pd.DataFrame(rows).sort_values(["symbol", "start_date"]).reset_index(drop=True)
 
 
 def stints_from_changes(
@@ -227,11 +379,11 @@ def members_as_of(stints: pd.DataFrame, as_of: DateLike) -> pd.DataFrame:
     """Names whose stint covers ``as_of`` (left the index on ``end_date``)."""
     if stints is None or stints.empty:
         return pd.DataFrame(columns=["symbol", "name", "sector", "industry"])
-    day = pd.Timestamp(as_of).date()
-    start = pd.to_datetime(stints["start_date"]).dt.date
+    day = pd.Timestamp(as_of).normalize()
+    start = pd.to_datetime(stints["start_date"])
     end = pd.to_datetime(stints["end_date"], errors="coerce")
-    open_ended = stints["end_date"].isna()
-    ended_after = (~open_ended) & (end.dt.date > day)
+    open_ended = end.isna()
+    ended_after = (~open_ended) & (end > day)
     covered = (start <= day) & (open_ended | ended_after)
     return (
         stints.loc[covered, ["symbol", "name", "sector", "industry"]]
@@ -245,12 +397,12 @@ def members_between(stints: pd.DataFrame, start: DateLike, end: DateLike) -> pd.
     """Union of names that were members on any day in ``[start, end]``."""
     if stints is None or stints.empty:
         return pd.DataFrame(columns=["symbol", "name", "sector", "industry"])
-    start_d = pd.Timestamp(start).date()
-    end_d = pd.Timestamp(end).date()
-    stint_start = pd.to_datetime(stints["start_date"]).dt.date
-    open_ended = stints["end_date"].isna()
+    start_d = pd.Timestamp(start).normalize()
+    end_d = pd.Timestamp(end).normalize()
+    stint_start = pd.to_datetime(stints["start_date"])
     stint_end = pd.to_datetime(stints["end_date"], errors="coerce")
-    overlaps = (stint_start <= end_d) & (open_ended | (stint_end.dt.date >= start_d))
+    open_ended = stint_end.isna()
+    overlaps = (stint_start <= end_d) & (open_ended | (stint_end >= start_d))
     return (
         stints.loc[overlaps, ["symbol", "name", "sector", "industry"]]
         .drop_duplicates("symbol")
